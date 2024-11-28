@@ -6,8 +6,8 @@ output_file="all_files_content.txt"
 # 清空或创建输出文件
 > "$output_file"
 
-# 递归查找所有文件并处理
-find . -type f ! -name "$output_file" -print0 | while IFS= read -r -d '' file; do
+# 递归查找所有文件并处理，忽略 .git 和 .vscode 目录
+find . -type f ! -path "*.git/*" ! -path "*.vscode/*" ! -name "$output_file" -print0 | while IFS= read -r -d '' file; do
     # 跳过二进制文件和特殊文件
     if file "$file" | grep -q "text"; then
         # 写入文件路径

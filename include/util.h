@@ -10,8 +10,14 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "json.hpp"
+
 #include <string>
 #include <vector>
+#include <memory>
+#include <stdexcept>
+#include <system_error>
+#include <optional>
+#include <functional>
 
 using json = nlohmann::json;
 
