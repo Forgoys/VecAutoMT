@@ -1,30 +1,30 @@
 #include "code_modifier.h"
 
-void CodeModifier::run(const MatchFinder::MatchResult &Result)
+void CodeModifier::run(const clang::ast_matchers::MatchFinder::MatchResult &Result)
 {
-    const auto *arrayExpr = Result.Nodes.getNodeAs<ArraySubscriptExpr>("arrayAccess");
+    const auto *arrayExpr = Result.Nodes.getNodeAs<clang::ArraySubscriptExpr>("arrayAccess");
     if (!arrayExpr)
         return;
 
     // 在数组访问前插入注释
-    SourceLocation loc = arrayExpr->getBeginLoc();
+    clang::SourceLocation loc = arrayExpr->getBeginLoc();
     rewrite.InsertText(loc, "/* Array access modified */\n", true);
 }
 
 void ExtendedCodeModifier::addBoundsCheck(
-    const ArraySubscriptExpr *Array, const ForStmt *Loop)
+    const clang::ArraySubscriptExpr *Array, const clang::ForStmt *Loop)
 {
-    SourceLocation loc = Array->getBeginLoc();
+    clang::SourceLocation loc = Array->getBeginLoc();
 
     // 获取数组名和索引变量名
     std::string arrayName;
-    if (const auto *baseExpr = dyn_cast<DeclRefExpr>(Array->getBase()->IgnoreParenImpCasts()))
+    if (const auto *baseExpr = llvm::dyn_cast<clang::DeclRefExpr>(Array->getBase()->IgnoreParenImpCasts()))
     {
         arrayName = baseExpr->getNameInfo().getAsString();
     }
 
     std::string indexName;
-    if (const auto *idx = dyn_cast<DeclRefExpr>(Array->getIdx()->IgnoreParenImpCasts()))
+    if (const auto *idx = llvm::dyn_cast<clang::DeclRefExpr>(Array->getIdx()->IgnoreParenImpCasts()))
     {
         indexName = idx->getNameInfo().getAsString();
     }
@@ -41,16 +41,16 @@ void ExtendedCodeModifier::addBoundsCheck(
     rewrite.InsertText(loc, check, true);
 }
 
-void ExtendedCodeModifier::addOptimizationHint(const ArraySubscriptExpr *Array)
+void ExtendedCodeModifier::addOptimizationHint(const clang::ArraySubscriptExpr *Array)
 {
-    SourceLocation loc = Array->getBeginLoc();
+    clang::SourceLocation loc = Array->getBeginLoc();
     std::string hint = "/* 考虑使用SIMD指令优化 */\n";
     rewrite.InsertText(loc, hint, true);
 }
 
-void ExtendedCodeModifier::addParallelizationHint(const ForStmt *Loop)
+void ExtendedCodeModifier::addParallelizationHint(const clang::ForStmt *Loop)
 {
-    SourceLocation loc = Loop->getBeginLoc();
+    clang::SourceLocation loc = Loop->getBeginLoc();
     std::string hint = "/* 考虑使用OpenMP并行化 */\n";
     rewrite.InsertText(loc, hint, true);
 }

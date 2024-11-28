@@ -1,6 +1,9 @@
 #include "array_matcher.h"
 #include <fstream>
 
+#include "array_matcher.h"
+#include <fstream>
+
 void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
 {
     const auto *arrayExpr = Result.Nodes.getNodeAs<ArraySubscriptExpr>("arrayAccess");
@@ -11,6 +14,18 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
     if (!arrayExpr || !forStmt || !loopVar || !func)
         return;
 
+    // 获取源码管理器
+    SourceManager &SM = *Result.SourceManager;
+
+    // 检查文件名是否匹配
+    std::string filename = SM.getFilename(arrayExpr->getBeginLoc()).str();
+    if (filename.empty()) {
+        return;
+    }
+
+    // 检查行号是否在预期范围内
+    unsigned int lineNum = SM.getSpellingLineNumber(forStmt->getBeginLoc());
+    
     // 验证循环条件
     if (!isSimpleIncrement(forStmt->getInc()))
         return;
@@ -19,17 +34,13 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
     if (!isArrayIndexFromLoop(arrayExpr, loopVar))
         return;
 
-    // 获取源码管理器
-    SourceManager &SM = *Result.SourceManager;
-
     // 收集位置信息
     ArrayAccessInfo info;
     info.arrayName = arrayExpr->getBase()->getType().getAsString();
     info.indexVarName = loopVar->getNameAsString();
 
     // 填充位置信息
-    auto fillLocationInfo = [&SM](const Stmt *stmt, const std::string &funcName) -> LocationInfo
-    {
+    auto fillLocationInfo = [&SM](const clang::Stmt *stmt, const std::string &funcName) -> LocationInfo {
         SourceLocation start = stmt->getBeginLoc();
         SourceLocation end = stmt->getEndLoc();
 
@@ -41,10 +52,28 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
 
         // 获取源代码文本
         loc.sourceText = Lexer::getSourceText(
-                             CharSourceRange::getCharRange(start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
-                             SM,
-                             LangOptions())
-                             .str();
+            CharSourceRange::getCharRange(start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
+            SM,
+            LangOptions()).str();
+
+        return loc;
+    };
+
+    auto fillDeclLocationInfo = [&SM](const clang::Decl *decl, const std::string &funcName) -> LocationInfo {
+        SourceLocation start = decl->getBeginLoc();
+        SourceLocation end = decl->getEndLoc();
+
+        LocationInfo loc;
+        loc.filename = SM.getFilename(start).str();
+        loc.functionName = funcName;
+        loc.startLine = SM.getSpellingLineNumber(start);
+        loc.endLine = SM.getSpellingLineNumber(end);
+
+        // 获取源代码文本
+        loc.sourceText = Lexer::getSourceText(
+            CharSourceRange::getCharRange(start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
+            SM,
+            LangOptions()).str();
 
         return loc;
     };
@@ -56,26 +85,16 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
     info.forLoopLocation = fillLocationInfo(forStmt, func->getNameAsString());
 
     // 收集相关代码位置
-    // 包括数组声明、循环变量声明等
-    if (const auto *arrayType = arrayExpr->getBase()->getType()->getAsArrayType())
-    {
-        // 获取数组声明
-        if (const auto *baseExpr = arrayExpr->getBase()->IgnoreParenImpCasts())
-        {
-            if (const auto *declRef = dyn_cast<DeclRefExpr>(baseExpr))
-            {
-                if (const auto *varDecl = dyn_cast<VarDecl>(declRef->getDecl()))
-                {
-                    info.relatedCodeLocations.push_back(
-                        fillLocationInfo(varDecl->getDefinition(), func->getNameAsString()));
-                }
+    if (const auto *baseExpr = arrayExpr->getBase()->IgnoreParenImpCasts()) {
+        if (const auto *declRef = dyn_cast<DeclRefExpr>(baseExpr)) {
+            if (const auto *varDecl = dyn_cast<VarDecl>(declRef->getDecl())) {
+                info.relatedCodeLocations.push_back(
+                    fillDeclLocationInfo(varDecl, func->getNameAsString()));
             }
         }
     }
 
-    // 构建JSON输出
-    try
-    {
+    try {
         // 构建JSON输出
         json arrayJson;
         arrayJson["filename"] = info.arrayLocation.filename;
@@ -94,15 +113,11 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
 
         // 检查是否已存在相同的forLoop信息
         bool found = false;
-        for (auto &item : outputJson)
-        {
-            try
-            {
+        for (auto &item : outputJson) {
+            try {
                 if (item.at("function") == arrayJson["function"] &&
-                    item.at("forLoop").at("startLine") == arrayJson["forLoop"]["startLine"])
-                {
-                    if (!item.contains("arrays"))
-                    {
+                    item.at("forLoop").at("startLine") == arrayJson["forLoop"]["startLine"]) {
+                    if (!item.contains("arrays")) {
                         item["arrays"] = json::array();
                     }
                     item["arrays"].push_back(arrayInfo);
@@ -110,21 +125,18 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
                     break;
                 }
             }
-            catch (const json::exception &e)
-            {
+            catch (const json::exception &e) {
                 llvm::errs() << "JSON处理错误: " << e.what() << "\n";
                 continue;
             }
         }
 
-        if (!found)
-        {
+        if (!found) {
             arrayJson["arrays"] = json::array({arrayInfo});
             outputJson.push_back(arrayJson);
         }
     }
-    catch (const json::exception &e)
-    {
+    catch (const json::exception &e) {
         llvm::errs() << "JSON处理错误: " << e.what() << "\n";
         return;
     }
@@ -148,8 +160,8 @@ bool ArrayMatcher::isSimpleIncrement(const Stmt *Inc) const
     return false;
 }
 
-bool isArrayIndexFromLoop(const ArraySubscriptExpr *Array,
-                          const VarDecl *LoopVar) const
+bool ArrayMatcher::isArrayIndexFromLoop(const ArraySubscriptExpr *Array,
+                                        const VarDecl *LoopVar) const
 {
     const Expr *idx = Array->getIdx()->IgnoreParenImpCasts();
 

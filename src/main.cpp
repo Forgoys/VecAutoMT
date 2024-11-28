@@ -100,18 +100,7 @@ int main(int argc, const char **argv)
                                    functionDecl(hasName(item["function"].get<std::string>()))),
                                // 匹配for循环
                                hasAncestor(
-                                   forStmt(
-                                       // 匹配循环的起始行号
-                                       hasSourceLocation(
-                                           lineRange(
-                                               item["forLoop"]["startLine"].get<unsigned>(),
-                                               item["forLoop"]["endLine"].get<unsigned>())))
-                                       .bind("forLoop")),
-                               // 确保数组在正确的源文件中
-                               hasSourceLocation(
-                                   anyOf(
-                                       filePathMatches(item["filename"].get<std::string>()),
-                                       filePathEndsWith(item["filename"].get<std::string>()))))
+                                   forStmt().bind("forLoop")))
                                .bind("arrayAccess");
 
             // 创建回调并添加匹配器

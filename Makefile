@@ -9,7 +9,7 @@ DEV_INCLUDE_PATH:=${DEV_CC_INCLUDE_PATH} ${HTHREADS_INCLUDE_PATH}
 DEV_INCLUDE_FLAGS:=$(foreach i, ${DEV_INCLUDE_PATH}, -I${i})
 
 # 设置本地 LLVM 和 Clang 的路径
-LLVM_HOME := $(HOME)/lhj/llvm-install
+LLVM_HOME := /opt/homebrew/opt/llvm
 
 # 使用本地的 clang++
 CLANG := $(LLVM_HOME)/bin/clang++
@@ -36,20 +36,28 @@ TOOL_LINK_FLAGS := -L$(LLVM_HOME)/lib -Wl,-rpath,$(LLVM_HOME)/lib $(LLVM_LDFLAGS
 # 在运行时指定资源目录
 ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/10.0.0
 
+# 源文件
+SRCS := src/main.cpp src/array_matcher.cpp src/code_modifier.cpp
+OBJS := $(SRCS:.cpp=.o)
+
 # 编译目标
 .PHONY: all build run clean
 
 all: build
 
-build: bin/auto_vec
+build: bin/VecAutoMT
 
-bin/auto_vec: src/main.cpp include/util.h
+bin/VecAutoMT: $(OBJS)
 	mkdir -p bin
-	$(CLANG) $(TOOL_CLANG_FLAGS) -o bin/auto_vec src/main.cpp $(TOOL_LINK_FLAGS)
+	$(CLANG) $(TOOL_CLANG_FLAGS) -o $@ $^ $(TOOL_LINK_FLAGS)
+
+%.o: %.cpp
+	$(CLANG) $(TOOL_CLANG_FLAGS) -c -o $@ $<
 
 run:
 	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
-	bin/auto_vec test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+	bin/VecAutoMT test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
 
 clean:
 	rm -rf bin
+	rm -f $(OBJS)
