@@ -92,10 +92,10 @@ TOOL_CLANG_FLAGS := $(CLANG_FLAGS) $(LLVM_CXXFLAGS) -I$(CLANG_INCLUDEDIR) -Iincl
 TOOL_LINK_FLAGS := -L$(LLVM_HOME)/lib -Wl,-rpath,$(LLVM_HOME)/lib $(LLVM_LDFLAGS) $(LLVM_LIBS) $(CLANG_LIBS) $(LLVM_SYSTEM_LIBS)
 
 # 在运行时指定资源目录
-ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/10.0.0
+ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/18
 
 # 源文件
-SRCS := src/main.cpp src/array_matcher.cpp src/code_modifier.cpp
+SRCS := src/main.cpp src/array_matcher.cpp src/code_modifier.cpp src/preprocessor_config.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 # 编译目标
@@ -114,11 +114,53 @@ bin/VecAutoMT: $(OBJS)
 
 run:
 	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
-	bin/VecAutoMT test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+	bin/VecAutoMT -locate test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
 
 clean:
 	rm -rf bin
 	rm -f $(OBJS)-------
+
+文件的相对路径：include/preprocessor_config.h
+文件内容：
+#ifndef PREPROCESSOR_CONFIG_H
+#define PREPROCESSOR_CONFIG_H
+
+#include "util.h"
+#include "clang/Basic/Diagnostic.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendActions.h"
+#include "clang/Tooling/Tooling.h"
+#include "clang/Rewrite/Core/Rewriter.h"
+#include "llvm/Support/CommandLine.h"
+
+// 声明外部命令行选项的引用
+extern llvm::cl::opt<bool>& getLocateMode();
+extern llvm::cl::opt<bool>& getRestoreMode();
+extern llvm::cl::opt<bool>& getModifyMode();
+
+extern json inputJson;
+extern json outputJson;
+extern clang::Rewriter TheRewriter;
+
+// 预处理器配置类
+class PreprocessorConfig {
+public:
+    static void configure(clang::CompilerInstance &CI);
+};
+
+// 自定义前端Action类
+class CustomFrontendAction : public clang::ASTFrontendAction {
+protected:
+    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
+        clang::CompilerInstance &CI, 
+        llvm::StringRef InFile) override;
+};
+
+// 创建自定义前端Action工厂的辅助函数
+std::unique_ptr<clang::tooling::FrontendActionFactory> 
+createCustomFrontendActionFactory();
+
+#endif // PREPROCESSOR_CONFIG_H-------
 
 文件的相对路径：include/util.h
 文件内容：
@@ -186,27 +228,30 @@ struct ToolConfig {
 #include "util.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 
+using namespace clang;
+using namespace clang::ast_matchers;
+
 // 代码修改器 - 基础版本
-class CodeModifier : public MatchFinder::MatchCallback {
+class CodeModifier : public clang::ast_matchers::MatchFinder::MatchCallback {
 public:
-    CodeModifier(Rewriter& rewriter) : rewrite(rewriter) {}
-    virtual void run(const MatchFinder::MatchResult &Result) override;
+    CodeModifier(clang::Rewriter& rewriter) : rewrite(rewriter) {}
+    virtual void run(const clang::ast_matchers::MatchFinder::MatchResult &Result) override;
     
 protected:
-    Rewriter& rewrite;
+    clang::Rewriter& rewrite;
 };
 
 // 代码修改器 - 扩展版本
 class ExtendedCodeModifier : public CodeModifier {
 public:
-    ExtendedCodeModifier(Rewriter& rewriter) : CodeModifier(rewriter) {}
+    ExtendedCodeModifier(clang::Rewriter& rewriter) : CodeModifier(rewriter) {}
     
     // 添加边界检查
-    void addBoundsCheck(const ArraySubscriptExpr* Array, const ForStmt* Loop);
+    void addBoundsCheck(const clang::ArraySubscriptExpr* Array, const clang::ForStmt* Loop);
     // 添加优化提示
-    void addOptimizationHint(const ArraySubscriptExpr* Array);
+    void addOptimizationHint(const clang::ArraySubscriptExpr* Array);
     // 添加并行化提示
-    void addParallelizationHint(const ForStmt* Loop);
+    void addParallelizationHint(const clang::ForStmt* Loop);
 };
 
 #endif // CODE_MODIFIER_H-------
@@ -293,6 +338,138 @@ done
 
 echo "处理完成，结果保存在 $output_file"-------
 
+文件的相对路径：README.md
+文件内容：
+# VecAutoMT - Auto Vectorization Tool for MT-3000
+
+VecAutoMT 是一个基于 LLVM/Clang 的代码分析工具，用于分析和处理 C/C++ 代码中的数组访问模式。该工具主要用于识别和处理可能适合向量化优化的代码片段。
+
+## 功能特性
+
+该工具提供三种主要工作模式：
+
+1. **定位模式 (Locate)**
+   - 识别代码中的数组访问模式
+   - 分析 for 循环中的数组索引使用
+   - 输出详细的位置信息（文件、函数、行号）
+   - 生成结构化的 JSON 分析报告
+
+2. **恢复模式 (Restore)**
+   - 基于之前生成的 JSON 分析报告
+   - 重新定位代码中的关键位置
+   - 支持代码修改后的重新分析
+
+3. **修改模式 (Modify)**
+   - 自动添加代码优化提示
+   - 插入边界检查
+   - 添加向量化和并行化建议
+
+## 前置要求
+
+- LLVM/Clang (推荐使用 14.0.0 或更高版本)
+- C++14 或更高版本的编译器
+- Make 构建工具
+
+## 安装
+
+1. 克隆仓库：
+```bash
+git clone https://github.com/Forgoys/VecAutoMT
+cd VecAutoMT
+```
+
+2. 配置环境：
+编辑 `make.conf` 文件，设置 LLVM 安装路径：
+```makefile
+LLVM_PATH = /path/to/your/llvm
+```
+
+3. 编译工具：
+```bash
+make
+```
+
+## 使用方法
+
+### 基本用法
+
+```bash
+./bin/VecAutoMT [options] <source-file> -- [compiler-options]
+```
+
+### 命令行选项
+
+- `-locate`: 启用定位模式
+- `-restore`: 启用恢复模式
+- `-modify`: 启用修改模式
+- `-output <file>`: 指定输出文件
+- `-input <file>`: 指定输入 JSON 文件（恢复模式需要）
+
+### 使用示例
+
+1. 定位模式分析：
+```bash
+./bin/VecAutoMT -locate -output analysis.json test.c -- -I/path/to/includes
+```
+
+2. 基于分析结果恢复：
+```bash
+./bin/VecAutoMT -restore -input analysis.json test.c -- -I/path/to/includes
+```
+
+3. 添加优化提示：
+```bash
+./bin/VecAutoMT -modify -output modified.c test.c -- -I/path/to/includes
+```
+
+## 输出格式
+
+### JSON 输出格式（定位模式）
+
+```json
+[
+  {
+    "filename": "test.c",
+    "function": "example_function",
+    "forLoop": {
+      "startLine": 10,
+      "endLine": 15,
+      "sourceText": "for(int i = 0; i < n; i++)"
+    },
+    "arrays": [
+      {
+        "name": "array",
+        "indexVar": "i",
+        "line": 12,
+        "sourceText": "array[i] = value"
+      }
+    ]
+  }
+]
+```
+
+## 支持的分析模式
+
+工具当前支持以下分析模式：
+
+1. 数组访问模式：
+   - 简单的循环索引访问
+   - 带步长的数组访问
+   - 多维数组访问
+
+2. 循环特征：
+   - 单变量自增循环
+   - 边界检查识别
+   - 循环步长分析
+
+## 限制和注意事项
+
+- 目前仅支持 C/C++ 源代码分析
+- 分析结果依赖于代码的具体形式
+- 某些复杂的数组访问模式可能无法被正确识别
+- 修改模式下的代码变更需要人工审查
+-------
+
 文件的相对路径：.gitignore
 文件内容：
 # 忽略 macOS 系统自动生成的 .DS_Store 文件
@@ -300,7 +477,9 @@ echo "处理完成，结果保存在 $output_file"-------
 
 # 忽略 VSCode 的设置文件夹 .vscode
 .vscode/
--------
+
+all_files_content.txt
+print_files.sh-------
 
 文件的相对路径：src/array_matcher.cpp
 文件内容：
@@ -533,35 +712,144 @@ bool ExtendedArrayMatcher::hasBoundsChecking(
     return false;
 }-------
 
+文件的相对路径：src/preprocessor_config.cpp
+文件内容：
+#include "preprocessor_config.h"
+#include "array_matcher.h"
+#include "code_modifier.h"
+#include "util.h"
+
+void PreprocessorConfig::configure(clang::CompilerInstance &CI)
+{
+    clang::Preprocessor &PP = CI.getPreprocessor();
+
+    // 仅在分析阶段处理特殊属性
+    if (getLocateMode() || getRestoreMode())
+    {
+        std::string predefs = PP.getPredefines();
+        predefs += "\n"
+                   "#define global\n"
+                   "#define share\n"
+                   "#define gsm\n"
+                   "#define EXTRACT_VECTOR(vr, i, r) ((void)0)\n"
+                   "#define __attribute__(x)\n"
+                   "#define section(x)\n";
+        PP.setPredefines(predefs);
+    }
+    // ModifyMode 不添加这些预处理定义，保持原有属性
+}
+
+// 使用外部声明的命令行选项
+extern llvm::cl::opt<bool> LocateMode;
+extern llvm::cl::opt<bool> RestoreMode;
+extern llvm::cl::opt<bool> ModifyMode;
+extern json outputJson;
+
+std::unique_ptr<clang::ASTConsumer> 
+CustomFrontendAction::CreateASTConsumer(
+    clang::CompilerInstance &CI, 
+    llvm::StringRef InFile) 
+{
+    // 根据模式选择是否配置预处理器
+    if (!getModifyMode()) {  // 只在非修改模式下应用预处理配置
+        PreprocessorConfig::configure(CI);
+    }
+    
+    // 创建匹配查找器
+    auto Finder = std::make_unique<clang::ast_matchers::MatchFinder>();
+    
+    if (getLocateMode()) {
+        // 定位模式的匹配器
+        auto matcher = forStmt(
+            hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
+            hasBody(hasDescendant(arraySubscriptExpr().bind("arrayAccess"))),
+            hasAncestor(functionDecl().bind("containingFunction")))
+            .bind("forLoop");
+            
+        Finder->addMatcher(matcher, new ExtendedArrayMatcher(outputJson));
+    }
+    else if (getRestoreMode()) {
+        if (!inputJson.is_null()) {
+            // 遍历JSON文件中的每个位置信息
+            for (const auto &item : inputJson) {
+                auto matcher = arraySubscriptExpr(
+                    hasAncestor(
+                        functionDecl(hasName(item["function"].get<std::string>()))),
+                    hasAncestor(
+                        forStmt().bind("forLoop")))
+                    .bind("arrayAccess");
+
+                Finder->addMatcher(matcher, new ArrayMatcher(outputJson));
+            }
+        }
+    }
+    else if (getModifyMode()) {
+        // 修改模式的匹配器
+        auto matcher = arraySubscriptExpr(
+            hasAncestor(
+                forStmt().bind("forLoop")))
+            .bind("arrayAccess");
+
+        Finder->addMatcher(matcher, new ExtendedCodeModifier(TheRewriter));
+    }
+    
+    // 创建并返回AST消费者
+    return Finder->newASTConsumer();
+}
+
+std::unique_ptr<clang::tooling::FrontendActionFactory> 
+createCustomFrontendActionFactory() {
+    class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory {
+    public:
+        std::unique_ptr<clang::FrontendAction> create() override {
+            return std::make_unique<CustomFrontendAction>();
+        }
+    };
+    
+    return std::make_unique<CustomFrontendActionFactory>();
+}-------
+
 文件的相对路径：src/code_modifier.cpp
 文件内容：
 #include "code_modifier.h"
 
-void CodeModifier::run(const MatchFinder::MatchResult &Result)
+void CodeModifier::run(const clang::ast_matchers::MatchFinder::MatchResult &Result)
 {
-    const auto *arrayExpr = Result.Nodes.getNodeAs<ArraySubscriptExpr>("arrayAccess");
+    const auto *arrayExpr = Result.Nodes.getNodeAs<clang::ArraySubscriptExpr>("arrayAccess");
     if (!arrayExpr)
         return;
 
-    // 在数组访问前插入注释
-    SourceLocation loc = arrayExpr->getBeginLoc();
-    rewrite.InsertText(loc, "/* Array access modified */\n", true);
+    // 获取原始代码的属性和宏
+    clang::SourceManager &SM = Result.Context->getSourceManager();
+    const clang::LangOptions &LangOpts = Result.Context->getLangOpts();
+
+    // 在插入新代码时，保持原有的属性和宏定义
+    clang::SourceLocation loc = arrayExpr->getBeginLoc();
+
+    // 获取完整的源代码，包括属性
+    clang::CharSourceRange range = clang::CharSourceRange::getCharRange(
+        arrayExpr->getBeginLoc(),
+        arrayExpr->getEndLoc());
+    std::string originalCode = clang::Lexer::getSourceText(range, SM, LangOpts).str();
+
+    // 修改代码时保持原有属性
+    rewrite.InsertText(loc, "/* Array access modified */\n" + originalCode, true);
 }
 
 void ExtendedCodeModifier::addBoundsCheck(
-    const ArraySubscriptExpr *Array, const ForStmt *Loop)
+    const clang::ArraySubscriptExpr *Array, const clang::ForStmt *Loop)
 {
-    SourceLocation loc = Array->getBeginLoc();
+    clang::SourceLocation loc = Array->getBeginLoc();
 
     // 获取数组名和索引变量名
     std::string arrayName;
-    if (const auto *baseExpr = dyn_cast<DeclRefExpr>(Array->getBase()->IgnoreParenImpCasts()))
+    if (const auto *baseExpr = llvm::dyn_cast<clang::DeclRefExpr>(Array->getBase()->IgnoreParenImpCasts()))
     {
         arrayName = baseExpr->getNameInfo().getAsString();
     }
 
     std::string indexName;
-    if (const auto *idx = dyn_cast<DeclRefExpr>(Array->getIdx()->IgnoreParenImpCasts()))
+    if (const auto *idx = llvm::dyn_cast<clang::DeclRefExpr>(Array->getIdx()->IgnoreParenImpCasts()))
     {
         indexName = idx->getNameInfo().getAsString();
     }
@@ -578,16 +866,16 @@ void ExtendedCodeModifier::addBoundsCheck(
     rewrite.InsertText(loc, check, true);
 }
 
-void ExtendedCodeModifier::addOptimizationHint(const ArraySubscriptExpr *Array)
+void ExtendedCodeModifier::addOptimizationHint(const clang::ArraySubscriptExpr *Array)
 {
-    SourceLocation loc = Array->getBeginLoc();
+    clang::SourceLocation loc = Array->getBeginLoc();
     std::string hint = "/* 考虑使用SIMD指令优化 */\n";
     rewrite.InsertText(loc, hint, true);
 }
 
-void ExtendedCodeModifier::addParallelizationHint(const ForStmt *Loop)
+void ExtendedCodeModifier::addParallelizationHint(const clang::ForStmt *Loop)
 {
-    SourceLocation loc = Loop->getBeginLoc();
+    clang::SourceLocation loc = Loop->getBeginLoc();
     std::string hint = "/* 考虑使用OpenMP并行化 */\n";
     rewrite.InsertText(loc, hint, true);
 }-------
@@ -597,6 +885,7 @@ void ExtendedCodeModifier::addParallelizationHint(const ForStmt *Loop)
 #include "util.h"
 #include "array_matcher.h"
 #include "code_modifier.h"
+#include "preprocessor_config.h"
 #include <fstream>
 #include <iostream>
 
@@ -618,20 +907,30 @@ static cl::opt<std::string> InputFile(
     cl::value_desc("filename"),
     cl::cat(ToolCategory));
 
-static cl::opt<bool> LocateMode(
+// 定义并导出命令行选项
+llvm::cl::opt<bool> LocateMode(
     "locate",
-    cl::desc("启用定位模式"),
-    cl::cat(ToolCategory));
+    llvm::cl::desc("启用定位模式"),
+    llvm::cl::cat(ToolCategory));
 
-static cl::opt<bool> RestoreMode(
+llvm::cl::opt<bool> RestoreMode(
     "restore",
-    cl::desc("启用恢复模式"),
-    cl::cat(ToolCategory));
+    llvm::cl::desc("启用恢复模式"),
+    llvm::cl::cat(ToolCategory));
 
-static cl::opt<bool> ModifyMode(
+llvm::cl::opt<bool> ModifyMode(
     "modify",
-    cl::desc("启用修改模式"),
-    cl::cat(ToolCategory));
+    llvm::cl::desc("启用修改模式"),
+    llvm::cl::cat(ToolCategory));
+
+// 定义getter函数
+llvm::cl::opt<bool>& getLocateMode() { return LocateMode; }
+llvm::cl::opt<bool>& getRestoreMode() { return RestoreMode; }
+llvm::cl::opt<bool>& getModifyMode() { return ModifyMode; }
+
+json inputJson = json::array();
+json outputJson = json::array();
+clang::Rewriter TheRewriter; // 在ModifyMode中初始化
 
 int main(int argc, const char **argv)
 {
@@ -647,22 +946,12 @@ int main(int argc, const char **argv)
     ClangTool Tool(OptionsParser.getCompilations(),
                    OptionsParser.getSourcePathList());
 
-    json outputJson = json::array();
     MatchFinder Finder;
 
-    if (LocateMode)
+    if (getLocateMode())
     {
-        // 定位模式：查找符合条件的数组访问
-        auto matcher = forStmt(
-                           hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
-                           hasBody(hasDescendant(arraySubscriptExpr().bind("arrayAccess"))),
-                           hasAncestor(functionDecl().bind("containingFunction")))
-                           .bind("forLoop");
-
-        ExtendedArrayMatcher Callback(outputJson);
-        Finder.addMatcher(matcher, &Callback);
-
-        if (Tool.run(newFrontendActionFactory(&Finder).get()) != 0)
+        // 使用自定义的 FrontendAction
+        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
 
         // 输出JSON文件
@@ -672,7 +961,7 @@ int main(int argc, const char **argv)
             out << outputJson.dump(4);
         }
     }
-    else if (RestoreMode)
+    else if (getRestoreMode())
     {
         // 恢复模式：从JSON文件读取位置信息并重新定位
         if (InputFile.empty())
@@ -683,7 +972,6 @@ int main(int argc, const char **argv)
 
         // 读取JSON文件
         std::ifstream input(InputFile);
-        json inputJson;
         input >> inputJson;
 
         // 遍历JSON文件中的每个位置信息
@@ -704,7 +992,7 @@ int main(int argc, const char **argv)
             Finder.addMatcher(matcher, &Callback);
         }
 
-        if (Tool.run(newFrontendActionFactory(&Finder).get()) != 0)
+        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
 
         // 输出恢复的位置信息
@@ -714,26 +1002,57 @@ int main(int argc, const char **argv)
             out << outputJson.dump(4);
         }
     }
-    else if (ModifyMode)
+    else if (getModifyMode())
     {
-        // 修改模式：根据位置信息修改代码
+        // 检查输入文件
+        if (InputFile.empty())
+        {
+            llvm::errs() << "错误：修改模式需要指定输入JSON文件\n";
+            return 1;
+        }
+
+        // 读取JSON文件
+        std::ifstream input(InputFile);
+        try
+        {
+            input >> inputJson;
+        }
+        catch (const json::exception &e)
+        {
+            llvm::errs() << "JSON文件解析错误: " << e.what() << "\n";
+            return 1;
+        }
+
         // 创建重写器
         Rewriter TheRewriter;
 
         // 构建匹配器
-        auto matcher = arraySubscriptExpr(
-                           hasAncestor(
-                               forStmt().bind("forLoop")))
-                           .bind("arrayAccess");
+        MatchFinder Finder;
 
-        // 创建扩展的代码修改器
-        ExtendedCodeModifier ModCallback(TheRewriter);
-        Finder.addMatcher(matcher, &ModCallback);
+        // 遍历JSON文件中的每个位置信息
+        for (const auto &item : inputJson)
+        {
+            try
+            {
+                auto matcher = arraySubscriptExpr(
+                                   hasAncestor(
+                                       functionDecl(hasName(item["function"].get<std::string>()))),
+                                   hasAncestor(
+                                       forStmt().bind("forLoop")))
+                                   .bind("arrayAccess");
 
-        std::unique_ptr<FrontendActionFactory> Factory =
-            newFrontendActionFactory(&Finder);
+                // 创建扩展的代码修改器
+                ExtendedCodeModifier *ModCallback = new ExtendedCodeModifier(TheRewriter);
+                Finder.addMatcher(matcher, ModCallback);
+            }
+            catch (const json::exception &e)
+            {
+                llvm::errs() << "JSON数据处理错误: " << e.what() << "\n";
+                return 1;
+            }
+        }
 
-        if (Tool.run(Factory.get()) != 0)
+        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
 
         // 输出修改后的代码
@@ -743,7 +1062,7 @@ int main(int argc, const char **argv)
             llvm::raw_fd_ostream OS(OutputFile, EC);
             if (EC)
             {
-                llvm::errs() << "Error opening output file: " << EC.message() << "\n";
+                llvm::errs() << "打开输出文件错误: " << EC.message() << "\n";
                 return 1;
             }
 
@@ -751,10 +1070,13 @@ int main(int argc, const char **argv)
                 TheRewriter.getRewriteBufferFor(TheRewriter.getSourceMgr().getMainFileID());
             if (!RewriteBuf)
             {
-                llvm::errs() << "No edits were made to the source file.\n";
+                llvm::errs() << "没有对源文件进行修改。\n";
                 return 1;
             }
 
+            // 保留原有的头文件和特殊属性
+            OS << "#include <compiler/m3000.h>\n";
+            OS << "#include \"hthread_device.h\"\n\n";
             OS << std::string(RewriteBuf->begin(), RewriteBuf->end());
         }
     }

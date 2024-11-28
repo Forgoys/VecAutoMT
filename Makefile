@@ -34,10 +34,10 @@ TOOL_CLANG_FLAGS := $(CLANG_FLAGS) $(LLVM_CXXFLAGS) -I$(CLANG_INCLUDEDIR) -Iincl
 TOOL_LINK_FLAGS := -L$(LLVM_HOME)/lib -Wl,-rpath,$(LLVM_HOME)/lib $(LLVM_LDFLAGS) $(LLVM_LIBS) $(CLANG_LIBS) $(LLVM_SYSTEM_LIBS)
 
 # 在运行时指定资源目录
-ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/10.0.0
+ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/18
 
 # 源文件
-SRCS := src/main.cpp src/array_matcher.cpp src/code_modifier.cpp
+SRCS := src/main.cpp src/array_matcher.cpp src/code_modifier.cpp src/preprocessor_config.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 # 编译目标
@@ -56,7 +56,7 @@ bin/VecAutoMT: $(OBJS)
 
 run:
 	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
-	bin/VecAutoMT test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+	bin/VecAutoMT -locate test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
 
 clean:
 	rm -rf bin

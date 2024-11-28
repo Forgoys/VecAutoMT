@@ -6,9 +6,21 @@ void CodeModifier::run(const clang::ast_matchers::MatchFinder::MatchResult &Resu
     if (!arrayExpr)
         return;
 
-    // 在数组访问前插入注释
+    // 获取原始代码的属性和宏
+    clang::SourceManager &SM = Result.Context->getSourceManager();
+    const clang::LangOptions &LangOpts = Result.Context->getLangOpts();
+
+    // 在插入新代码时，保持原有的属性和宏定义
     clang::SourceLocation loc = arrayExpr->getBeginLoc();
-    rewrite.InsertText(loc, "/* Array access modified */\n", true);
+
+    // 获取完整的源代码，包括属性
+    clang::CharSourceRange range = clang::CharSourceRange::getCharRange(
+        arrayExpr->getBeginLoc(),
+        arrayExpr->getEndLoc());
+    std::string originalCode = clang::Lexer::getSourceText(range, SM, LangOpts).str();
+
+    // 修改代码时保持原有属性
+    rewrite.InsertText(loc, "/* Array access modified */\n" + originalCode, true);
 }
 
 void ExtendedCodeModifier::addBoundsCheck(

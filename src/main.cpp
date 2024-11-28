@@ -1,6 +1,7 @@
 #include "util.h"
 #include "array_matcher.h"
 #include "code_modifier.h"
+#include "preprocessor_config.h"
 #include <fstream>
 #include <iostream>
 
@@ -22,20 +23,30 @@ static cl::opt<std::string> InputFile(
     cl::value_desc("filename"),
     cl::cat(ToolCategory));
 
-static cl::opt<bool> LocateMode(
+// 定义并导出命令行选项
+llvm::cl::opt<bool> LocateMode(
     "locate",
-    cl::desc("启用定位模式"),
-    cl::cat(ToolCategory));
+    llvm::cl::desc("启用定位模式"),
+    llvm::cl::cat(ToolCategory));
 
-static cl::opt<bool> RestoreMode(
+llvm::cl::opt<bool> RestoreMode(
     "restore",
-    cl::desc("启用恢复模式"),
-    cl::cat(ToolCategory));
+    llvm::cl::desc("启用恢复模式"),
+    llvm::cl::cat(ToolCategory));
 
-static cl::opt<bool> ModifyMode(
+llvm::cl::opt<bool> ModifyMode(
     "modify",
-    cl::desc("启用修改模式"),
-    cl::cat(ToolCategory));
+    llvm::cl::desc("启用修改模式"),
+    llvm::cl::cat(ToolCategory));
+
+// 定义getter函数
+llvm::cl::opt<bool> &getLocateMode() { return LocateMode; }
+llvm::cl::opt<bool> &getRestoreMode() { return RestoreMode; }
+llvm::cl::opt<bool> &getModifyMode() { return ModifyMode; }
+
+json inputJson = json::array();
+json outputJson = json::array();
+clang::Rewriter TheRewriter; // 在ModifyMode中初始化
 
 int main(int argc, const char **argv)
 {
@@ -51,22 +62,12 @@ int main(int argc, const char **argv)
     ClangTool Tool(OptionsParser.getCompilations(),
                    OptionsParser.getSourcePathList());
 
-    json outputJson = json::array();
     MatchFinder Finder;
 
-    if (LocateMode)
+    if (getLocateMode())
     {
-        // 定位模式：查找符合条件的数组访问
-        auto matcher = forStmt(
-                           hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
-                           hasBody(hasDescendant(arraySubscriptExpr().bind("arrayAccess"))),
-                           hasAncestor(functionDecl().bind("containingFunction")))
-                           .bind("forLoop");
-
-        ExtendedArrayMatcher Callback(outputJson);
-        Finder.addMatcher(matcher, &Callback);
-
-        if (Tool.run(newFrontendActionFactory(&Finder).get()) != 0)
+        // 使用自定义的 FrontendAction
+        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
 
         // 输出JSON文件
@@ -76,7 +77,7 @@ int main(int argc, const char **argv)
             out << outputJson.dump(4);
         }
     }
-    else if (RestoreMode)
+    else if (getRestoreMode())
     {
         // 恢复模式：从JSON文件读取位置信息并重新定位
         if (InputFile.empty())
@@ -87,7 +88,6 @@ int main(int argc, const char **argv)
 
         // 读取JSON文件
         std::ifstream input(InputFile);
-        json inputJson;
         input >> inputJson;
 
         // 遍历JSON文件中的每个位置信息
@@ -108,7 +108,7 @@ int main(int argc, const char **argv)
             Finder.addMatcher(matcher, &Callback);
         }
 
-        if (Tool.run(newFrontendActionFactory(&Finder).get()) != 0)
+        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
 
         // 输出恢复的位置信息
@@ -118,26 +118,29 @@ int main(int argc, const char **argv)
             out << outputJson.dump(4);
         }
     }
-    else if (ModifyMode)
+    else if (getModifyMode())
     {
-        // 修改模式：根据位置信息修改代码
-        // 创建重写器
-        Rewriter TheRewriter;
+        // 检查输入文件
+        if (InputFile.empty())
+        {
+            llvm::errs() << "错误：修改模式需要指定输入JSON文件\n";
+            return 1;
+        }
 
-        // 构建匹配器
-        auto matcher = arraySubscriptExpr(
-                           hasAncestor(
-                               forStmt().bind("forLoop")))
-                           .bind("arrayAccess");
+        // 读取JSON文件
+        std::ifstream input(InputFile);
+        try
+        {
+            input >> inputJson;
+        }
+        catch (const json::exception &e)
+        {
+            llvm::errs() << "JSON文件解析错误: " << e.what() << "\n";
+            return 1;
+        }
 
-        // 创建扩展的代码修改器
-        ExtendedCodeModifier ModCallback(TheRewriter);
-        Finder.addMatcher(matcher, &ModCallback);
-
-        std::unique_ptr<FrontendActionFactory> Factory =
-            newFrontendActionFactory(&Finder);
-
-        if (Tool.run(Factory.get()) != 0)
+        // 运行工具
+        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
 
         // 输出修改后的代码
@@ -147,7 +150,7 @@ int main(int argc, const char **argv)
             llvm::raw_fd_ostream OS(OutputFile, EC);
             if (EC)
             {
-                llvm::errs() << "Error opening output file: " << EC.message() << "\n";
+                llvm::errs() << "打开输出文件错误: " << EC.message() << "\n";
                 return 1;
             }
 
@@ -155,10 +158,13 @@ int main(int argc, const char **argv)
                 TheRewriter.getRewriteBufferFor(TheRewriter.getSourceMgr().getMainFileID());
             if (!RewriteBuf)
             {
-                llvm::errs() << "No edits were made to the source file.\n";
+                llvm::errs() << "没有对源文件进行修改。\n";
                 return 1;
             }
 
+            // 保留原有的头文件和特殊属性
+            OS << "#include <compiler/m3000.h>\n";
+            OS << "#include \"hthread_device.h\"\n\n";
             OS << std::string(RewriteBuf->begin(), RewriteBuf->end());
         }
     }
