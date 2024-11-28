@@ -8,8 +8,7 @@ void PreprocessorConfig::configure(clang::CompilerInstance &CI)
     clang::Preprocessor &PP = CI.getPreprocessor();
 
     // 仅在分析阶段处理特殊属性
-    if (getLocateMode() || getRestoreMode())
-    {
+    if (getLocateMode() || getRestoreMode()) {
         std::string predefs = PP.getPredefines();
         predefs += "\n"
                    "#ifdef global\n"
@@ -46,56 +45,40 @@ extern llvm::cl::opt<bool> RestoreMode;
 extern llvm::cl::opt<bool> ModifyMode;
 extern json outputJson;
 
-std::unique_ptr<clang::ASTConsumer>
-CustomFrontendAction::CreateASTConsumer(
-    clang::CompilerInstance &CI,
-    llvm::StringRef InFile)
+std::unique_ptr<clang::ASTConsumer> CustomFrontendAction::CreateASTConsumer(clang::CompilerInstance &CI,
+                                                                            llvm::StringRef InFile)
 {
     // 根据模式选择是否配置预处理器
-    if (!getModifyMode())
-    { // 只在非修改模式下应用预处理配置
+    if (!getModifyMode()) { // 只在非修改模式下应用预处理配置
         PreprocessorConfig::configure(CI);
     }
 
     // 创建匹配查找器
     auto Finder = std::make_unique<clang::ast_matchers::MatchFinder>();
 
-    if (getLocateMode())
-    {
+    if (getLocateMode()) {
         // 定位模式的匹配器
-        auto matcher = forStmt(
-                           hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
-                           hasBody(hasDescendant(arraySubscriptExpr().bind("arrayAccess"))),
-                           hasAncestor(functionDecl().bind("containingFunction")))
+        auto matcher = forStmt(hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
+                               hasBody(hasDescendant(arraySubscriptExpr().bind("arrayAccess"))),
+                               hasAncestor(functionDecl().bind("containingFunction")))
                            .bind("forLoop");
 
         Finder->addMatcher(matcher, new ExtendedArrayMatcher(outputJson));
-    }
-    else if (getRestoreMode())
-    {
-        if (!inputJson.is_null())
-        {
+    } else if (getRestoreMode()) {
+        if (!inputJson.is_null()) {
             // 遍历JSON文件中的每个位置信息
-            for (const auto &item : inputJson)
-            {
-                auto matcher = arraySubscriptExpr(
-                                   hasAncestor(
-                                       functionDecl(hasName(item["function"].get<std::string>()))),
-                                   hasAncestor(
-                                       forStmt().bind("forLoop")))
-                                   .bind("arrayAccess");
+            for (const auto &item : inputJson) {
+                auto matcher =
+                    arraySubscriptExpr(hasAncestor(functionDecl(hasName(item["function"].get<std::string>()))),
+                                       hasAncestor(forStmt().bind("forLoop")))
+                        .bind("arrayAccess");
 
                 Finder->addMatcher(matcher, new ArrayMatcher(outputJson));
             }
         }
-    }
-    else if (getModifyMode())
-    {
+    } else if (getModifyMode()) {
         // 修改模式的匹配器
-        auto matcher = arraySubscriptExpr(
-                           hasAncestor(
-                               forStmt().bind("forLoop")))
-                           .bind("arrayAccess");
+        auto matcher = arraySubscriptExpr(hasAncestor(forStmt().bind("forLoop"))).bind("arrayAccess");
 
         Finder->addMatcher(matcher, new ExtendedCodeModifier(TheRewriter));
     }
@@ -104,23 +87,20 @@ CustomFrontendAction::CreateASTConsumer(
     return Finder->newASTConsumer();
 }
 
-bool CustomFrontendAction::BeginSourceFileAction(clang::CompilerInstance &CI) {
+bool CustomFrontendAction::BeginSourceFileAction(clang::CompilerInstance &CI)
+{
     if (getModifyMode()) {
         TheRewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
     }
     return true;
 }
 
-std::unique_ptr<clang::tooling::FrontendActionFactory>
-createCustomFrontendActionFactory()
+std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory()
 {
     class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory
     {
     public:
-        std::unique_ptr<clang::FrontendAction> create() override
-        {
-            return std::make_unique<CustomFrontendAction>();
-        }
+        std::unique_ptr<clang::FrontendAction> create() override { return std::make_unique<CustomFrontendAction>(); }
     };
 
     return std::make_unique<CustomFrontendActionFactory>();

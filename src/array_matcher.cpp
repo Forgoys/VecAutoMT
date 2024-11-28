@@ -25,7 +25,7 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
 
     // 检查行号是否在预期范围内
     unsigned int lineNum = SM.getSpellingLineNumber(forStmt->getBeginLoc());
-    
+
     // 验证循环条件
     if (!isSimpleIncrement(forStmt->getInc()))
         return;
@@ -51,10 +51,10 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
         loc.endLine = SM.getSpellingLineNumber(end);
 
         // 获取源代码文本
-        loc.sourceText = Lexer::getSourceText(
-            CharSourceRange::getCharRange(start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
-            SM,
-            LangOptions()).str();
+        loc.sourceText = Lexer::getSourceText(CharSourceRange::getCharRange(
+                                                  start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
+                                              SM, LangOptions())
+                             .str();
 
         return loc;
     };
@@ -70,10 +70,10 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
         loc.endLine = SM.getSpellingLineNumber(end);
 
         // 获取源代码文本
-        loc.sourceText = Lexer::getSourceText(
-            CharSourceRange::getCharRange(start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
-            SM,
-            LangOptions()).str();
+        loc.sourceText = Lexer::getSourceText(CharSourceRange::getCharRange(
+                                                  start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
+                                              SM, LangOptions())
+                             .str();
 
         return loc;
     };
@@ -88,8 +88,7 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
     if (const auto *baseExpr = arrayExpr->getBase()->IgnoreParenImpCasts()) {
         if (const auto *declRef = dyn_cast<DeclRefExpr>(baseExpr)) {
             if (const auto *varDecl = dyn_cast<VarDecl>(declRef->getDecl())) {
-                info.relatedCodeLocations.push_back(
-                    fillDeclLocationInfo(varDecl, func->getNameAsString()));
+                info.relatedCodeLocations.push_back(fillDeclLocationInfo(varDecl, func->getNameAsString()));
             }
         }
     }
@@ -124,8 +123,7 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
                     found = true;
                     break;
                 }
-            }
-            catch (const json::exception &e) {
+            } catch (const json::exception &e) {
                 llvm::errs() << "JSON处理错误: " << e.what() << "\n";
                 continue;
             }
@@ -135,8 +133,7 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
             arrayJson["arrays"] = json::array({arrayInfo});
             outputJson.push_back(arrayJson);
         }
-    }
-    catch (const json::exception &e) {
+    } catch (const json::exception &e) {
         llvm::errs() << "JSON处理错误: " << e.what() << "\n";
         return;
     }
@@ -153,32 +150,26 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
 
 bool ArrayMatcher::isSimpleIncrement(const Stmt *Inc) const
 {
-    if (const auto *unary = dyn_cast<UnaryOperator>(Inc))
-    {
+    if (const auto *unary = dyn_cast<UnaryOperator>(Inc)) {
         return unary->isIncrementOp() && unary->isPostfix();
     }
     return false;
 }
 
-bool ArrayMatcher::isArrayIndexFromLoop(const ArraySubscriptExpr *Array,
-                                        const VarDecl *LoopVar) const
+bool ArrayMatcher::isArrayIndexFromLoop(const ArraySubscriptExpr *Array, const VarDecl *LoopVar) const
 {
     const Expr *idx = Array->getIdx()->IgnoreParenImpCasts();
 
     // 检查直接使用循环变量的情况
-    if (const auto *declRef = dyn_cast<DeclRefExpr>(idx))
-    {
+    if (const auto *declRef = dyn_cast<DeclRefExpr>(idx)) {
         return declRef->getDecl() == LoopVar;
     }
 
     // 检查循环变量的简单运算 (i+1, i-1 等)
-    if (const auto *binOp = dyn_cast<BinaryOperator>(idx))
-    {
-        if (binOp->isAdditiveOp())
-        {
+    if (const auto *binOp = dyn_cast<BinaryOperator>(idx)) {
+        if (binOp->isAdditiveOp()) {
             const Expr *lhs = binOp->getLHS()->IgnoreParenImpCasts();
-            if (const auto *declRef = dyn_cast<DeclRefExpr>(lhs))
-            {
+            if (const auto *declRef = dyn_cast<DeclRefExpr>(lhs)) {
                 return declRef->getDecl() == LoopVar;
             }
         }
@@ -190,13 +181,9 @@ bool ArrayMatcher::isArrayIndexFromLoop(const ArraySubscriptExpr *Array,
 // ExtendedArrayMatcher的实现
 bool ExtendedArrayMatcher::isSteppedIncrement(const Stmt *Inc, int &stepSize) const
 {
-    if (const auto *binary = dyn_cast<BinaryOperator>(Inc))
-    {
-        if (binary->getOpcode() == BO_AddAssign)
-        {
-            if (const auto *literal = dyn_cast<IntegerLiteral>(
-                    binary->getRHS()->IgnoreParenImpCasts()))
-            {
+    if (const auto *binary = dyn_cast<BinaryOperator>(Inc)) {
+        if (binary->getOpcode() == BO_AddAssign) {
+            if (const auto *literal = dyn_cast<IntegerLiteral>(binary->getRHS()->IgnoreParenImpCasts())) {
                 stepSize = literal->getValue().getLimitedValue();
                 return true;
             }
@@ -205,21 +192,17 @@ bool ExtendedArrayMatcher::isSteppedIncrement(const Stmt *Inc, int &stepSize) co
     return false;
 }
 
-bool ExtendedArrayMatcher::isMultiDimensionalAccess(
-    const ArraySubscriptExpr *Array) const
+bool ExtendedArrayMatcher::isMultiDimensionalAccess(const ArraySubscriptExpr *Array) const
 {
     const Expr *base = Array->getBase()->IgnoreParenImpCasts();
     return isa<ArraySubscriptExpr>(base);
 }
 
-bool ExtendedArrayMatcher::hasBoundsChecking(
-    const ArraySubscriptExpr *Array, const ForStmt *Loop) const
+bool ExtendedArrayMatcher::hasBoundsChecking(const ArraySubscriptExpr *Array, const ForStmt *Loop) const
 {
     // 检查循环条件
-    if (const auto *cond = dyn_cast<BinaryOperator>(Loop->getCond()))
-    {
-        if (cond->getOpcode() == BO_LT || cond->getOpcode() == BO_LE)
-        {
+    if (const auto *cond = dyn_cast<BinaryOperator>(Loop->getCond())) {
+        if (cond->getOpcode() == BO_LT || cond->getOpcode() == BO_LE) {
             // TODO: 进一步检查边界值是否与数组大小相关
             return true;
         }
