@@ -1,8 +1,8 @@
 #ifndef UTIL_H
 #define UTIL_H
 
-#include "json.hpp"
-#include "fifo_map.hpp"
+#include "nlohmann/json.hpp"
+#include "nlohmann/fifo_map.hpp"
 #include "clang/AST/AST.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"

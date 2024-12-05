@@ -202,8 +202,8 @@ std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActio
 #ifndef UTIL_H
 #define UTIL_H
 
-#include "json.hpp"
-#include "fifo_map.hpp"
+#include "nlohmann/json.hpp"
+#include "nlohmann/fifo_map.hpp"
 #include "clang/AST/AST.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
@@ -221,16 +221,12 @@ std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActio
 #include <system_error>
 #include <vector>
 
-using json = nlohmann::json;
+// 首先定义使用 fifo_map 的 json 类型
+template<class K, class V, class dummy_compare, class A>
+using fifo_map_type = nlohmann::fifo_map<K, V, nlohmann::fifo_map_compare<K>, A>;
 
-namespace nlohmann {
-    // 基于 fifo_map 的专门化
-    template<class K, class V, class dummy_compare, class A>
-    using fifo_map_type = fifo_map<K, V, fifo_map_compare<K>, A>;
-
-    // 使用 fifo_map 的 json 类型定义
-    using json = basic_json<fifo_map_type>;
-}
+// 然后定义使用 fifo_map 的 json
+using json = nlohmann::basic_json<fifo_map_type>;
 
 // 工具运行模式
 enum class ToolMode
@@ -529,6 +525,8 @@ make
 .vscode/
 
 .idea/
+
+*.o
 
 all_files_content.txt
 print_files.sh-------

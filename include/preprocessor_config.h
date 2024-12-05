@@ -7,16 +7,9 @@
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/Tooling.h"
-#include "llvm/Support/CommandLine.h"
-
-// 声明外部命令行选项的引用
-extern llvm::cl::opt<bool> &getLocateMode();
-extern llvm::cl::opt<bool> &getRestoreMode();
-extern llvm::cl::opt<bool> &getModifyMode();
 
 // 预处理器配置类
-class PreprocessorConfig
-{
+class PreprocessorConfig {
 public:
     static void configure(clang::CompilerInstance &CI);
 };

@@ -1,15 +1,16 @@
 #include "preprocessor_config.h"
+#include "command_line_options.h"
 #include "array_matcher.h"
 #include "code_modifier.h"
 #include "util.h"
 #include <iostream>
 
-// preprocessor_config.cpp
 void PreprocessorConfig::configure(clang::CompilerInstance &CI)
 {
     clang::Preprocessor &PP = CI.getPreprocessor();
+    auto& options = CommandLineOptions::instance();
 
-    if (getLocateMode() || getRestoreMode()) {
+    if (options.getLocateMode() || options.getRestoreMode()) {
         std::string predefs = PP.getPredefines();
         predefs += "\n"
                 "#ifdef global\n"

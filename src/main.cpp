@@ -1,149 +1,108 @@
-#include "array_matcher.h"
 #include "code_modifier.h"
 #include "frontend_action.h"
-#include "util.h"
-// #include "testHandler.h"
-#include <fstream>
+#include "command_line_options.h"
+#include "json_manager.h"
+#include "clang/Rewrite/Core/Rewriter.h"
 #include <iostream>
+#include <memory>
 
 using namespace clang::tooling;
-using namespace llvm;
 
-// 命令行选项
-static cl::OptionCategory ToolCategory("Array Analysis Tool Options");
+// Global rewriter for modify mode
+clang::Rewriter TheRewriter;
 
-static cl::opt<std::string> OutputFile("output", cl::desc("指定输出文件"), cl::value_desc("filename"),
-                                       cl::cat(ToolCategory));
+int main(int argc, const char **argv) {
+    try {
+        // Initialize command line options
+        CommandLineOptions::instance().initialize(argc, argv);
+        auto& options = CommandLineOptions::instance();
 
-static cl::opt<std::string> InputFile("input", cl::desc("指定输入JSON文件"), cl::value_desc("filename"),
-                                      cl::cat(ToolCategory));
+        // Get non-const reference to CommonOptionsParser
+        auto& optionsParser = options.getOptionsParser();
 
-// 定义并导出命令行选项
-llvm::cl::opt<bool> LocateMode("locate", llvm::cl::desc("启用定位模式"), llvm::cl::cat(ToolCategory));
+        // Create compilation database and source paths
+        auto& compilations = optionsParser.getCompilations();
+        auto sourcePaths = optionsParser.getSourcePathList();
 
-llvm::cl::opt<bool> RestoreMode("restore", llvm::cl::desc("启用恢复模式"), llvm::cl::cat(ToolCategory));
+        // Create ClangTool
+        ClangTool Tool(compilations, sourcePaths);
 
-llvm::cl::opt<bool> ModifyMode("modify", llvm::cl::desc("启用修改模式"), llvm::cl::cat(ToolCategory));
+        auto& jsonManager = JsonManager::instance();
 
-// 定义getter函数
-llvm::cl::opt<bool> &getLocateMode() { return LocateMode; }
-llvm::cl::opt<bool> &getRestoreMode() { return RestoreMode; }
-llvm::cl::opt<bool> &getModifyMode() { return ModifyMode; }
+        if (options.getLocateMode()) {
+            // Run the tool with custom frontend action
+            if (Tool.run(createCustomFrontendActionFactory().get()) != 0) {
+                return 1;
+            }
 
-json inputJson = json::array();
-json outputJson = json::array();
-clang::Rewriter TheRewriter; // 在ModifyMode中初始化
+            // Write output if specified
+            if (!options.getOutputFile().empty()) {
+                jsonManager.writeOutputJson(options.getOutputFile());
+            }
 
-int main(int argc, const char **argv)
-{
-    // 解析命令行选项
-    auto ExpectedParser = CommonOptionsParser::create(argc, argv, ToolCategory);
-    if (!ExpectedParser) {
-        llvm::errs() << ExpectedParser.takeError();
+        } else if (options.getRestoreMode()) {
+            if (options.getInputFile().empty()) {
+                llvm::errs() << "Error: No input JSON file specified\n";
+                return 1;
+            }
+
+            // Read input JSON
+            jsonManager.readInputJson(options.getInputFile());
+
+            // Run the tool
+            if (Tool.run(createCustomFrontendActionFactory().get()) != 0) {
+                return 1;
+            }
+
+            // Write output if specified
+            if (!options.getOutputFile().empty()) {
+                jsonManager.writeOutputJson(options.getOutputFile());
+            }
+
+        } else if (options.getModifyMode()) {
+            if (options.getInputFile().empty()) {
+                llvm::errs() << "Error: Modify mode requires input JSON file\n";
+                return 1;
+            }
+
+            // Read input JSON
+            jsonManager.readInputJson(options.getInputFile());
+
+            // Run the tool
+            if (Tool.run(createCustomFrontendActionFactory().get()) != 0) {
+                return 1;
+            }
+
+            // Write modified code
+            if (!options.getOutputFile().empty()) {
+                std::error_code EC;
+                llvm::raw_fd_ostream OS(options.getOutputFile(), EC);
+                if (EC) {
+                    llvm::errs() << "Error opening output file: " << EC.message() << "\n";
+                    return 1;
+                }
+
+                const RewriteBuffer *RewriteBuf =
+                    TheRewriter.getRewriteBufferFor(TheRewriter.getSourceMgr().getMainFileID());
+                if (!RewriteBuf) {
+                    llvm::errs() << "No modifications made to source file.\n";
+                    return 1;
+                }
+
+                // Preserve headers and special attributes
+                OS << "#include <compiler/m3000.h>\n";
+                OS << "#include \"hthread_device.h\"\n\n";
+                OS << std::string(RewriteBuf->begin(), RewriteBuf->end());
+            }
+
+        } else {
+            llvm::errs() << "Error: Please specify run mode (-locate, -restore, or -modify)\n";
+            return 1;
+        }
+
+        return 0;
+    } catch (const std::exception& e) {
+        llvm::errs() << "Error: " << e.what() << "\n";
         return 1;
     }
-
-    CommonOptionsParser &OptionsParser = ExpectedParser.get();
-    ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
-
-    MatchFinder Finder;
-    if (getLocateMode()) {
-        // 使用自定义的 FrontendAction
-        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
-            return 1;
-        // if (Tool.run(newFrontendActionFactory<MyFrontendAction>().get()) != 0)
-        //     return 1;
-
-        // 输出JSON文件
-        if (!OutputFile.empty()) {
-            std::ofstream out(OutputFile);
-            if (!out.is_open()) {
-                llvm::errs() << "无法打开输出文件\n";
-                return 1;
-            }
-            llvm::outs() << "输出 JSON 内容：" << outputJson.dump(4) << "\n";
-            out << outputJson.dump(4);
-            out.close();
-        }
-    } else if (getRestoreMode()) {
-        // 恢复模式：从JSON文件读取位置信息并重新定位
-        if (InputFile.empty()) {
-            llvm::errs() << "错误：未指定输入JSON文件\n";
-            return 1;
-        }
-
-        // 读取JSON文件
-        std::ifstream input(InputFile);
-        input >> inputJson;
-
-        // 遍历JSON文件中的每个位置信息
-        for (const auto &item : inputJson) {
-            // 构建匹配器，根据函数名和位置信息定位代码
-            auto matcher = arraySubscriptExpr(
-                               // 匹配函数名
-                               hasAncestor(functionDecl(hasName(item["function"].get<std::string>()))),
-                               // 匹配for循环
-                               hasAncestor(forStmt().bind("forLoop")))
-                               .bind("arrayAccess");
-
-            // 创建回调并添加匹配器
-            ArrayMatcher Callback(outputJson);
-            Finder.addMatcher(matcher, &Callback);
-        }
-
-        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
-            return 1;
-
-        // 输出恢复的位置信息
-        if (!OutputFile.empty()) {
-            std::ofstream out(OutputFile);
-            out << outputJson.dump(4);
-        }
-    } else if (getModifyMode()) {
-        // 检查输入文件
-        if (InputFile.empty()) {
-            llvm::errs() << "错误：修改模式需要指定输入JSON文件\n";
-            return 1;
-        }
-
-        // 读取JSON文件
-        std::ifstream input(InputFile);
-        try {
-            input >> inputJson;
-        } catch (const json::exception &e) {
-            llvm::errs() << "JSON文件解析错误: " << e.what() << "\n";
-            return 1;
-        }
-
-        // 运行工具
-        if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
-            return 1;
-
-        // 输出修改后的代码
-        if (!OutputFile.empty()) {
-            std::error_code EC;
-            llvm::raw_fd_ostream OS(OutputFile, EC);
-            if (EC) {
-                llvm::errs() << "打开输出文件错误: " << EC.message() << "\n";
-                return 1;
-            }
-
-            const RewriteBuffer *RewriteBuf =
-                TheRewriter.getRewriteBufferFor(TheRewriter.getSourceMgr().getMainFileID());
-            if (!RewriteBuf) {
-                llvm::errs() << "没有对源文件进行修改。\n";
-                return 1;
-            }
-
-            // 保留原有的头文件和特殊属性
-            OS << "#include <compiler/m3000.h>\n";
-            OS << "#include \"hthread_device.h\"\n\n";
-            OS << std::string(RewriteBuf->begin(), RewriteBuf->end());
-        }
-    } else {
-        llvm::errs() << "错误：请指定运行模式（-locate、-restore 或 -modify）\n";
-        return 1;
-    }
-
-    return 0;
 }
