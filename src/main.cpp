@@ -1,7 +1,8 @@
 #include "array_matcher.h"
 #include "code_modifier.h"
-#include "preprocessor_config.h"
+#include "frontend_action.h"
 #include "util.h"
+// #include "testHandler.h"
 #include <fstream>
 #include <iostream>
 
@@ -46,16 +47,23 @@ int main(int argc, const char **argv)
     ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
 
     MatchFinder Finder;
-
     if (getLocateMode()) {
         // 使用自定义的 FrontendAction
         if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
+        // if (Tool.run(newFrontendActionFactory<MyFrontendAction>().get()) != 0)
+        //     return 1;
 
         // 输出JSON文件
         if (!OutputFile.empty()) {
             std::ofstream out(OutputFile);
+            if (!out.is_open()) {
+                llvm::errs() << "无法打开输出文件\n";
+                return 1;
+            }
+            llvm::outs() << "输出 JSON 内容：" << outputJson.dump(4) << "\n";
             out << outputJson.dump(4);
+            out.close();
         }
     } else if (getRestoreMode()) {
         // 恢复模式：从JSON文件读取位置信息并重新定位

@@ -2,16 +2,15 @@
 文件内容：
 #include <stdint.h>
 
-#include <compiler/m3000.h>
 #include "hthread_device.h"
+#include <compiler/m3000.h>
 
 #define SEGMENT_SIZE 3840 // (2048 * 8) / 1024 = 16KB
 
 static inline void daxpy_single(uint64_t n, double a, double *x, double *y)
 {
-    for (uint64_t i = 0; i < n; ++i)
-    {
-        y[i] = a * x[i] + y[i];
+    for (uint64_t i = 0; i < n; ++i) {
+        y[i + 1] = a * x[i - 1] + y[2 * i];
     }
 }
 
@@ -24,19 +23,15 @@ __global__ void daxpy_kernel(uint64_t n, double a, double *x, double *y)
     uint64_t n_p = n / threadsNum;
     uint64_t extras = n % threadsNum;
     uint64_t offset;
-    if (threadId < extras)
-    {
+    if (threadId < extras) {
         n_p++;
         offset = threadId * n_p;
-    }
-    else
-    {
+    } else {
         offset = threadId * (n_p + 1) - (threadId - extras);
     }
 
     int len = SEGMENT_SIZE;
-    for (int i = 0; i < n_p; i += len)
-    {
+    for (int i = 0; i < n_p; i += len) {
         len = (n_p - i) >= SEGMENT_SIZE ? SEGMENT_SIZE : (n_p - i);
         // daxpy_single(len, a, x + offset + i, y + offset + i);
         daxpy_single(len, a, x + offset + i, y + offset + i);
@@ -60,7 +55,11 @@ HTHREADS_ROOT_PATH:=${DEV_PRO_PATH}/hthreads
 
 include make.conf
 
-HTHREADS_INCLUDE_PATH:=${HTHREADS_ROOT_PATH}/include 
+# 获取CPU核心数，用于并行编译
+NPROCS = $(shell nproc || sysctl -n hw.ncpu || echo 2)
+MAKEFLAGS += -j$(NPROCS)
+
+HTHREADS_INCLUDE_PATH:=${HTHREADS_ROOT_PATH}/include
 DEV_CC_INCLUDE_PATH:=${DEV_CC_ROOT_PATH}/include
 
 DEV_INCLUDE_PATH:=${DEV_CC_INCLUDE_PATH} ${HTHREADS_INCLUDE_PATH}
@@ -94,9 +93,10 @@ TOOL_LINK_FLAGS := -L$(LLVM_HOME)/lib -Wl,-rpath,$(LLVM_HOME)/lib $(LLVM_LDFLAGS
 # 在运行时指定资源目录
 ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/18
 
-# 源文件
-SRCS := src/main.cpp src/array_matcher.cpp src/code_modifier.cpp src/preprocessor_config.cpp
-OBJS := $(SRCS:.cpp=.o)
+# 源文件和目标文件
+SRC_DIR := src
+SRCS := $(wildcard $(SRC_DIR)/*.cpp)
+OBJS := $(SRCS:%.cpp=%.o)
 
 # 编译目标
 .PHONY: all build run clean
@@ -106,15 +106,16 @@ all: build
 build: bin/VecAutoMT
 
 bin/VecAutoMT: $(OBJS)
-	mkdir -p bin
+	@mkdir -p bin
 	$(CLANG) $(TOOL_CLANG_FLAGS) -o $@ $^ $(TOOL_LINK_FLAGS)
 
-%.o: %.cpp
-	$(CLANG) $(TOOL_CLANG_FLAGS) -c -o $@ $<
+$(SRC_DIR)/%.o: $(SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CLANG) $(TOOL_CLANG_FLAGS) -c $< -o $@
 
 run:
 	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
-	bin/VecAutoMT -locate test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+	bin/VecAutoMT -locate test/sample.c -output test/output.json -- $(DEV_INCLUDE_FLAGS) $(ARGS)
 
 clean:
 	rm -rf bin
@@ -129,92 +130,139 @@ clean:
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
-#include "clang/Tooling/Tooling.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 
 // 声明外部命令行选项的引用
-extern llvm::cl::opt<bool>& getLocateMode();
-extern llvm::cl::opt<bool>& getRestoreMode();
-extern llvm::cl::opt<bool>& getModifyMode();
+extern llvm::cl::opt<bool> &getLocateMode();
+extern llvm::cl::opt<bool> &getRestoreMode();
+extern llvm::cl::opt<bool> &getModifyMode();
+
+// 预处理器配置类
+class PreprocessorConfig
+{
+public:
+    static void configure(clang::CompilerInstance &CI);
+};
+
+#endif // PREPROCESSOR_CONFIG_H-------
+
+文件的相对路径：include/frontend_action.h
+文件内容：
+#ifndef FRONTEND_ACTION_H
+#define FRONTEND_ACTION_H
+
+#include <array_matcher.h>
+
+#include "util.h"
+#include "clang/Basic/Diagnostic.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendActions.h"
+#include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Tooling/Tooling.h"
+#include "llvm/Support/CommandLine.h"
+
+// 声明外部命令行选项的引用
+extern llvm::cl::opt<bool> &getLocateMode();
+extern llvm::cl::opt<bool> &getRestoreMode();
+extern llvm::cl::opt<bool> &getModifyMode();
 
 extern json inputJson;
 extern json outputJson;
 extern clang::Rewriter TheRewriter;
 
-// 预处理器配置类
-class PreprocessorConfig {
-public:
-    static void configure(clang::CompilerInstance &CI);
+// 自定义前端Action类
+class MyFrontendAction : public clang::ASTFrontendAction
+{
+protected:
+    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &CI, llvm::StringRef InFile) override;
+
+    // 新的初始化方法
+    bool BeginSourceFileAction(clang::CompilerInstance &CI) override;
 };
 
-// 自定义前端Action类
-class CustomFrontendAction : public clang::ASTFrontendAction {
-protected:
-    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
-        clang::CompilerInstance &CI, 
-        llvm::StringRef InFile) override;
+class MyASTConsumer : public clang::ASTConsumer
+{
+private:
+    MatchFinder matchFinder;
+public:
+    MyASTConsumer() = default;
+    MyASTConsumer(json &inputJson, json &outputJson);
+    void HandleTranslationUnit(clang::ASTContext &Context) override;
 };
 
 // 创建自定义前端Action工厂的辅助函数
-std::unique_ptr<clang::tooling::FrontendActionFactory> 
-createCustomFrontendActionFactory();
+std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory();
 
-#endif // PREPROCESSOR_CONFIG_H-------
+#endif-------
 
 文件的相对路径：include/util.h
 文件内容：
 #ifndef UTIL_H
 #define UTIL_H
 
+#include "json.hpp"
+#include "fifo_map.hpp"
 #include "clang/AST/AST.h"
-#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
-#include "json.hpp"
 
-#include <string>
-#include <vector>
-#include <memory>
-#include <stdexcept>
-#include <system_error>
-#include <optional>
 #include <functional>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+#include <vector>
 
 using json = nlohmann::json;
 
+namespace nlohmann {
+    // 基于 fifo_map 的专门化
+    template<class K, class V, class dummy_compare, class A>
+    using fifo_map_type = fifo_map<K, V, fifo_map_compare<K>, A>;
+
+    // 使用 fifo_map 的 json 类型定义
+    using json = basic_json<fifo_map_type>;
+}
+
 // 工具运行模式
-enum class ToolMode {
-    LOCATE,     // 定位模式
-    RESTORE,    // 恢复模式
-    MODIFY      // 修改模式
+enum class ToolMode
+{
+    LOCATE,  // 定位模式
+    RESTORE, // 恢复模式
+    MODIFY   // 修改模式
 };
 
 // 位置信息结构
-struct LocationInfo {
+struct LocationInfo
+{
     std::string filename;
     std::string functionName;
     unsigned startLine;
     unsigned endLine;
     std::string sourceText;
-    
+
     // 转换为JSON
     json toJson() const;
     // 从JSON构造
-    static LocationInfo fromJson(const json& j);
+    static LocationInfo fromJson(const json &j);
 };
 
 // 工具配置
-struct ToolConfig {
+struct ToolConfig
+{
     ToolMode mode;
     std::string inputFile;
     std::string outputFile;
     bool verbose;
-    
+
     static ToolConfig parseCommandLine(int argc, const char **argv);
 };
 
@@ -232,26 +280,28 @@ using namespace clang;
 using namespace clang::ast_matchers;
 
 // 代码修改器 - 基础版本
-class CodeModifier : public clang::ast_matchers::MatchFinder::MatchCallback {
+class CodeModifier : public clang::ast_matchers::MatchFinder::MatchCallback
+{
 public:
-    CodeModifier(clang::Rewriter& rewriter) : rewrite(rewriter) {}
+    CodeModifier(clang::Rewriter &rewriter) : rewrite(rewriter) {}
     virtual void run(const clang::ast_matchers::MatchFinder::MatchResult &Result) override;
-    
+
 protected:
-    clang::Rewriter& rewrite;
+    clang::Rewriter &rewrite;
 };
 
 // 代码修改器 - 扩展版本
-class ExtendedCodeModifier : public CodeModifier {
+class ExtendedCodeModifier : public CodeModifier
+{
 public:
-    ExtendedCodeModifier(clang::Rewriter& rewriter) : CodeModifier(rewriter) {}
-    
+    ExtendedCodeModifier(clang::Rewriter &rewriter) : CodeModifier(rewriter) {}
+
     // 添加边界检查
-    void addBoundsCheck(const clang::ArraySubscriptExpr* Array, const clang::ForStmt* Loop);
+    void addBoundsCheck(const clang::ArraySubscriptExpr *Array, const clang::ForStmt *Loop);
     // 添加优化提示
-    void addOptimizationHint(const clang::ArraySubscriptExpr* Array);
+    void addOptimizationHint(const clang::ArraySubscriptExpr *Array);
     // 添加并行化提示
-    void addParallelizationHint(const clang::ForStmt* Loop);
+    void addParallelizationHint(const clang::ForStmt *Loop);
 };
 
 #endif // CODE_MODIFIER_H-------
@@ -262,51 +312,51 @@ public:
 #define ARRAY_MATCHER_H
 
 #include "util.h"
-
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::tooling;
 
 // 数组访问信息
-struct ArrayAccessInfo {
+struct ArrayAccessInfo
+{
     std::string arrayName;
     LocationInfo arrayLocation;
     LocationInfo forLoopLocation;
     std::string indexVarName;
     std::vector<LocationInfo> relatedCodeLocations;
-    
+
     json toJson() const;
-    static ArrayAccessInfo fromJson(const json& j);
+    static ArrayAccessInfo fromJson(const json &j);
 };
 
 // 数组匹配器 - 基础版本
-class ArrayMatcher : public MatchFinder::MatchCallback {
+class ArrayMatcher : public MatchFinder::MatchCallback
+{
 public:
-    ArrayMatcher(json& output) : outputJson(output) {}
+    ArrayMatcher(json &output) : outputJson(output) {}
     virtual void run(const MatchFinder::MatchResult &Result) override;
-    
+
 protected:
-    json& outputJson;
-    
+    json &outputJson;
+
     // 验证是否是简单的自增
-    bool isSimpleIncrement(const Stmt* Inc) const;
+    bool isSimpleIncrement(const Stmt *Inc) const;
     // 验证数组索引是否来自循环变量
-    bool isArrayIndexFromLoop(const ArraySubscriptExpr* Array,
-                            const VarDecl* LoopVar) const;
+    bool isArrayIndexFromLoop(const ArraySubscriptExpr *Array, const VarDecl *LoopVar) const;
 };
 
 // 数组匹配器 - 扩展版本
-class ExtendedArrayMatcher : public ArrayMatcher {
+class ExtendedArrayMatcher : public ArrayMatcher
+{
 public:
-    ExtendedArrayMatcher(json& output) : ArrayMatcher(output) {}
-    
+    ExtendedArrayMatcher(json &output) : ArrayMatcher(output) {}
+
     // 检查步进循环
-    bool isSteppedIncrement(const Stmt* Inc, int& stepSize) const;
+    bool isSteppedIncrement(const Stmt *Inc, int &stepSize) const;
     // 检查多维数组
-    bool isMultiDimensionalAccess(const ArraySubscriptExpr* Array) const;
+    bool isMultiDimensionalAccess(const ArraySubscriptExpr *Array) const;
     // 检查边界
-    bool hasBoundsChecking(const ArraySubscriptExpr* Array, 
-                          const ForStmt* Loop) const;
+    bool hasBoundsChecking(const ArraySubscriptExpr *Array, const ForStmt *Loop) const;
 };
 
 #endif // ARRAY_MATCHER_H-------
@@ -322,7 +372,7 @@ output_file="all_files_content.txt"
 > "$output_file"
 
 # 递归查找所有文件并处理，忽略 .git 和 .vscode 目录
-find . -type f ! -path "*.git/*" ! -path "*.vscode/*" ! -name "$output_file" -print0 | while IFS= read -r -d '' file; do
+find . -type f ! -path "*.git/*"  ! -path "./include/testHandler.*" ! -path "*.idea/*" ! -path "print_files.sh" ! -path "README.md" ! -path "*doc/*" ! -path "*.vscode/*" ! -name "$output_file" -print0 | while IFS= read -r -d '' file; do
     # 跳过二进制文件和特殊文件
     if file "$file" | grep -q "text"; then
         # 写入文件路径
@@ -478,8 +528,101 @@ make
 # 忽略 VSCode 的设置文件夹 .vscode
 .vscode/
 
+.idea/
+
 all_files_content.txt
 print_files.sh-------
+
+文件的相对路径：src/frontend_action.cpp
+文件内容：
+#include "preprocessor_config.h"
+#include "frontend_action.h"
+#include "array_matcher.h"
+#include "code_modifier.h"
+#include "util.h"
+#include <iostream>
+
+// 使用外部声明的命令行选项
+extern llvm::cl::opt<bool> LocateMode;
+extern llvm::cl::opt<bool> RestoreMode;
+extern llvm::cl::opt<bool> ModifyMode;
+extern json inputJson;
+extern json outputJson;
+
+std::unique_ptr<clang::ASTConsumer> MyFrontendAction::CreateASTConsumer(clang::CompilerInstance &CI,
+                                                                        llvm::StringRef InFile)
+{
+    return std::make_unique<MyASTConsumer>(inputJson, outputJson);
+}
+
+bool MyFrontendAction::BeginSourceFileAction(clang::CompilerInstance &CI)
+{
+    // 根据模式选择是否配置预处理器
+    if (!getModifyMode()) {
+        // 只在非修改模式下应用预处理配置
+        PreprocessorConfig::configure(CI);
+        std::cout << "preprocess config done.\n";
+    } else {
+        TheRewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
+    }
+    return true;
+}
+
+MyASTConsumer::MyASTConsumer(json &inputJson, json &outputJson)
+{
+    // 创建匹配查找器
+    if (getLocateMode()) {
+        // 定位模式的匹配器
+        std::cout << "Locate mode.\n";
+        // auto matcher = forStmt(hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
+        //                        hasBody(hasDescendant(arraySubscriptExpr().bind("arrayAccess"))),
+        //                        hasAncestor(functionDecl().bind("containingFunction")))
+        //         .bind("forLoop");
+        auto matcher = forStmt(
+            hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
+            forEachDescendant(arraySubscriptExpr().bind("arrayAccess")),
+            hasAncestor(functionDecl().bind("containingFunction"))
+        ).bind("forLoop");
+        matchFinder.addMatcher(matcher, new ArrayMatcher(outputJson));
+        // Matcher->addMatcher(matcher, new ForLoopHandler());
+    } else if (getRestoreMode()) {
+        std::cout << "Restore mode.\n";
+        if (!inputJson.is_null()) {
+            // 遍历JSON文件中的每个位置信息
+            for (const auto &item: inputJson) {
+                auto matcher =
+                        arraySubscriptExpr(hasAncestor(functionDecl(hasName(item["function"].get<std::string>()))),
+                                           hasAncestor(forStmt().bind("forLoop")))
+                        .bind("arrayAccess");
+
+                matchFinder.addMatcher(matcher, new ArrayMatcher(outputJson));
+            }
+        }
+    } else if (getModifyMode()) {
+        std::cout << "Modify mode.\n";
+        // 修改模式的匹配器
+        auto matcher = arraySubscriptExpr(hasAncestor(forStmt().bind("forLoop"))).bind("arrayAccess");
+
+        matchFinder.addMatcher(matcher, new ExtendedCodeModifier(TheRewriter));
+    }
+}
+
+void MyASTConsumer::HandleTranslationUnit(clang::ASTContext &Context)
+{
+    matchFinder.matchAST(Context);
+}
+
+std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory()
+{
+    class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory
+    {
+    public:
+        std::unique_ptr<clang::FrontendAction> create() override { return std::make_unique<MyFrontendAction>(); }
+    };
+
+    return std::make_unique<CustomFrontendActionFactory>();
+}
+-------
 
 文件的相对路径：src/array_matcher.cpp
 文件内容：
@@ -509,15 +652,15 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
     }
 
     // 检查行号是否在预期范围内
-    unsigned int lineNum = SM.getSpellingLineNumber(forStmt->getBeginLoc());
-    
-    // 验证循环条件
-    if (!isSimpleIncrement(forStmt->getInc()))
-        return;
-
-    // 验证数组访问
-    if (!isArrayIndexFromLoop(arrayExpr, loopVar))
-        return;
+    // unsigned int lineNum = SM.getSpellingLineNumber(forStmt->getBeginLoc());
+    //
+    // // 验证循环条件
+    // if (!isSimpleIncrement(forStmt->getInc()))
+    //     return;
+    //
+    // // 验证数组访问
+    // if (!isArrayIndexFromLoop(arrayExpr, loopVar))
+    //     return;
 
     // 收集位置信息
     ArrayAccessInfo info;
@@ -536,10 +679,10 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
         loc.endLine = SM.getSpellingLineNumber(end);
 
         // 获取源代码文本
-        loc.sourceText = Lexer::getSourceText(
-            CharSourceRange::getCharRange(start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
-            SM,
-            LangOptions()).str();
+        loc.sourceText = Lexer::getSourceText(CharSourceRange::getCharRange(
+                                                  start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
+                                              SM, LangOptions())
+                .str();
 
         return loc;
     };
@@ -555,10 +698,10 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
         loc.endLine = SM.getSpellingLineNumber(end);
 
         // 获取源代码文本
-        loc.sourceText = Lexer::getSourceText(
-            CharSourceRange::getCharRange(start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
-            SM,
-            LangOptions()).str();
+        loc.sourceText = Lexer::getSourceText(CharSourceRange::getCharRange(
+                                                  start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
+                                              SM, LangOptions())
+                .str();
 
         return loc;
     };
@@ -573,97 +716,170 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
     if (const auto *baseExpr = arrayExpr->getBase()->IgnoreParenImpCasts()) {
         if (const auto *declRef = dyn_cast<DeclRefExpr>(baseExpr)) {
             if (const auto *varDecl = dyn_cast<VarDecl>(declRef->getDecl())) {
-                info.relatedCodeLocations.push_back(
-                    fillDeclLocationInfo(varDecl, func->getNameAsString()));
+                info.relatedCodeLocations.push_back(fillDeclLocationInfo(varDecl, func->getNameAsString()));
             }
         }
     }
 
+    // 在 array_matcher.cpp 的 run 方法中修改 JSON 处理部分
     try {
-        // 构建JSON输出
-        json arrayJson;
-        arrayJson["filename"] = info.arrayLocation.filename;
-        arrayJson["function"] = info.arrayLocation.functionName;
-        arrayJson["forLoop"] = json::object();
-        arrayJson["forLoop"]["startLine"] = info.forLoopLocation.startLine;
-        arrayJson["forLoop"]["endLine"] = info.forLoopLocation.endLine;
-        arrayJson["forLoop"]["sourceText"] = info.forLoopLocation.sourceText;
+        llvm::outs() << "正在处理新的数组访问信息:\n";
 
-        // 添加数组信息
-        json arrayInfo = json::object();
-        arrayInfo["name"] = info.arrayName;
-        arrayInfo["indexVar"] = info.indexVarName;
-        arrayInfo["line"] = info.arrayLocation.startLine;
-        arrayInfo["sourceText"] = info.arrayLocation.sourceText;
+        // 更新数组名称
+        const Expr *base = arrayExpr->getBase()->IgnoreParenImpCasts();
+        if (const auto *declRef = dyn_cast<DeclRefExpr>(base)) {
+            info.arrayName = declRef->getDecl()->getNameAsString();
+        } else {
+            info.arrayName = base->getType().getAsString();
+        }
 
-        // 检查是否已存在相同的forLoop信息
-        bool found = false;
-        for (auto &item : outputJson) {
-            try {
-                if (item.at("function") == arrayJson["function"] &&
-                    item.at("forLoop").at("startLine") == arrayJson["forLoop"]["startLine"]) {
-                    if (!item.contains("arrays")) {
-                        item["arrays"] = json::array();
+        if (!outputJson.is_array()) {
+            llvm::outs() << "初始化 outputJson 为空数组\n";
+            outputJson = json::array();
+        }
+
+        // 创建数组信息对象
+        json arrayInfo = json::object({
+            {"name", info.arrayName},
+            {"indexVar", info.indexVarName},
+            {"line", info.arrayLocation.startLine},
+            {"sourceText", info.arrayLocation.sourceText}
+        });
+
+        // 查找匹配的文件
+        bool fileFound = false;
+        for (auto &fileEntry: outputJson) {
+            if (fileEntry["filename"] == info.arrayLocation.filename) {
+                fileFound = true;
+
+                // 查找匹配的函数
+                bool functionFound = false;
+                for (auto &funcEntry: fileEntry["functions"]) {
+                    if (funcEntry["name"] == info.arrayLocation.functionName) {
+                        functionFound = true;
+
+                        // 查找匹配的循环
+                        bool loopFound = false;
+                        for (auto &loopEntry: funcEntry["forLoops"]) {
+                            if (loopEntry["startLine"] == info.forLoopLocation.startLine) {
+                                loopFound = true;
+
+                                // 检查是否已存在相同的数组访问
+                                bool arrayExists = false;
+                                for (const auto &arr: loopEntry["arrays"]) {
+                                    if (arr["name"] == info.arrayName &&
+                                        arr["line"] == info.arrayLocation.startLine) {
+                                        arrayExists = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!arrayExists) {
+                                    llvm::outs() << "添加新的数组访问: " << info.arrayName << "\n";
+                                    loopEntry["arrays"].push_back(arrayInfo);
+                                }
+                                break;
+                            }
+                        }
+
+                        if (!loopFound) {
+                            // 创建新的循环条目
+                            json loopEntry = json::object({
+                                {"startLine", info.forLoopLocation.startLine},
+                                {"endLine", info.forLoopLocation.endLine},
+                                {"sourceText", info.forLoopLocation.sourceText},
+                                {"arrays", json::array({arrayInfo})}
+                            });
+                            funcEntry["forLoops"].push_back(loopEntry);
+                        }
+                        break;
                     }
-                    item["arrays"].push_back(arrayInfo);
-                    found = true;
-                    break;
                 }
-            }
-            catch (const json::exception &e) {
-                llvm::errs() << "JSON处理错误: " << e.what() << "\n";
-                continue;
+
+                if (!functionFound) {
+                    // 创建新的函数条目
+                    json funcEntry = json::object({
+                        {"name", info.arrayLocation.functionName},
+                        {
+                            "forLoops", json::array({
+                                json::object({
+                                    {"startLine", info.forLoopLocation.startLine},
+                                    {"endLine", info.forLoopLocation.endLine},
+                                    {"sourceText", info.forLoopLocation.sourceText},
+                                    {"arrays", json::array({arrayInfo})}
+                                })
+                            })
+                        }
+                    });
+                    fileEntry["functions"].push_back(funcEntry);
+                }
+                break;
             }
         }
 
-        if (!found) {
-            arrayJson["arrays"] = json::array({arrayInfo});
-            outputJson.push_back(arrayJson);
+        if (!fileFound) {
+            // 创建新的文件条目
+            json fileEntry = json::object({
+                {"filename", info.arrayLocation.filename},
+                {
+                    "functions", json::array({
+                        json::object({
+                            {"name", info.arrayLocation.functionName},
+                            {
+                                "forLoops", json::array({
+                                    json::object({
+                                        {"startLine", info.forLoopLocation.startLine},
+                                        {"endLine", info.forLoopLocation.endLine},
+                                        {"sourceText", info.forLoopLocation.sourceText},
+                                        {"arrays", json::array({arrayInfo})}
+                                    })
+                                })
+                            }
+                        })
+                    })
+                }
+            });
+            outputJson.push_back(fileEntry);
         }
-    }
-    catch (const json::exception &e) {
+
+        llvm::outs() << "当前 outputJson 内容:\n" << outputJson.dump(2) << "\n\n";
+    } catch (const json::exception &e) {
         llvm::errs() << "JSON处理错误: " << e.what() << "\n";
         return;
     }
 
     // 终端输出
     llvm::outs() << "发现数组访问:\n"
-                 << "  文件: " << info.arrayLocation.filename << "\n"
-                 << "  函数: " << info.arrayLocation.functionName << "\n"
-                 << "  循环位置: 第" << info.forLoopLocation.startLine << "行\n"
-                 << "  数组: " << info.arrayName << "\n"
-                 << "  索引变量: " << info.indexVarName << "\n"
-                 << "  源代码: " << info.arrayLocation.sourceText << "\n\n";
+            << "  文件: " << info.arrayLocation.filename << "\n"
+            << "  函数: " << info.arrayLocation.functionName << "\n"
+            << "  循环位置: 第" << info.forLoopLocation.startLine << "行\n"
+            << "  数组: " << info.arrayName << "\n"
+            << "  索引变量: " << info.indexVarName << "\n"
+            << "  源代码: " << info.arrayLocation.sourceText << "\n\n";
 }
 
 bool ArrayMatcher::isSimpleIncrement(const Stmt *Inc) const
 {
-    if (const auto *unary = dyn_cast<UnaryOperator>(Inc))
-    {
+    if (const auto *unary = dyn_cast<UnaryOperator>(Inc)) {
         return unary->isIncrementOp() && unary->isPostfix();
     }
     return false;
 }
 
-bool ArrayMatcher::isArrayIndexFromLoop(const ArraySubscriptExpr *Array,
-                                        const VarDecl *LoopVar) const
+bool ArrayMatcher::isArrayIndexFromLoop(const ArraySubscriptExpr *Array, const VarDecl *LoopVar) const
 {
     const Expr *idx = Array->getIdx()->IgnoreParenImpCasts();
 
     // 检查直接使用循环变量的情况
-    if (const auto *declRef = dyn_cast<DeclRefExpr>(idx))
-    {
+    if (const auto *declRef = dyn_cast<DeclRefExpr>(idx)) {
         return declRef->getDecl() == LoopVar;
     }
 
     // 检查循环变量的简单运算 (i+1, i-1 等)
-    if (const auto *binOp = dyn_cast<BinaryOperator>(idx))
-    {
-        if (binOp->isAdditiveOp())
-        {
+    if (const auto *binOp = dyn_cast<BinaryOperator>(idx)) {
+        if (binOp->isAdditiveOp()) {
             const Expr *lhs = binOp->getLHS()->IgnoreParenImpCasts();
-            if (const auto *declRef = dyn_cast<DeclRefExpr>(lhs))
-            {
+            if (const auto *declRef = dyn_cast<DeclRefExpr>(lhs)) {
                 return declRef->getDecl() == LoopVar;
             }
         }
@@ -675,13 +891,9 @@ bool ArrayMatcher::isArrayIndexFromLoop(const ArraySubscriptExpr *Array,
 // ExtendedArrayMatcher的实现
 bool ExtendedArrayMatcher::isSteppedIncrement(const Stmt *Inc, int &stepSize) const
 {
-    if (const auto *binary = dyn_cast<BinaryOperator>(Inc))
-    {
-        if (binary->getOpcode() == BO_AddAssign)
-        {
-            if (const auto *literal = dyn_cast<IntegerLiteral>(
-                    binary->getRHS()->IgnoreParenImpCasts()))
-            {
+    if (const auto *binary = dyn_cast<BinaryOperator>(Inc)) {
+        if (binary->getOpcode() == BO_AddAssign) {
+            if (const auto *literal = dyn_cast<IntegerLiteral>(binary->getRHS()->IgnoreParenImpCasts())) {
                 stepSize = literal->getValue().getLimitedValue();
                 return true;
             }
@@ -690,27 +902,24 @@ bool ExtendedArrayMatcher::isSteppedIncrement(const Stmt *Inc, int &stepSize) co
     return false;
 }
 
-bool ExtendedArrayMatcher::isMultiDimensionalAccess(
-    const ArraySubscriptExpr *Array) const
+bool ExtendedArrayMatcher::isMultiDimensionalAccess(const ArraySubscriptExpr *Array) const
 {
     const Expr *base = Array->getBase()->IgnoreParenImpCasts();
     return isa<ArraySubscriptExpr>(base);
 }
 
-bool ExtendedArrayMatcher::hasBoundsChecking(
-    const ArraySubscriptExpr *Array, const ForStmt *Loop) const
+bool ExtendedArrayMatcher::hasBoundsChecking(const ArraySubscriptExpr *Array, const ForStmt *Loop) const
 {
     // 检查循环条件
-    if (const auto *cond = dyn_cast<BinaryOperator>(Loop->getCond()))
-    {
-        if (cond->getOpcode() == BO_LT || cond->getOpcode() == BO_LE)
-        {
+    if (const auto *cond = dyn_cast<BinaryOperator>(Loop->getCond())) {
+        if (cond->getOpcode() == BO_LT || cond->getOpcode() == BO_LE) {
             // TODO: 进一步检查边界值是否与数组大小相关
             return true;
         }
     }
     return false;
-}-------
+}
+-------
 
 文件的相对路径：src/preprocessor_config.cpp
 文件内容：
@@ -718,96 +927,45 @@ bool ExtendedArrayMatcher::hasBoundsChecking(
 #include "array_matcher.h"
 #include "code_modifier.h"
 #include "util.h"
+#include <iostream>
 
+// preprocessor_config.cpp
 void PreprocessorConfig::configure(clang::CompilerInstance &CI)
 {
     clang::Preprocessor &PP = CI.getPreprocessor();
 
-    // 仅在分析阶段处理特殊属性
-    if (getLocateMode() || getRestoreMode())
-    {
+    if (getLocateMode() || getRestoreMode()) {
         std::string predefs = PP.getPredefines();
         predefs += "\n"
-                   "#define global\n"
-                   "#define share\n"
-                   "#define gsm\n"
-                   "#define EXTRACT_VECTOR(vr, i, r) ((void)0)\n"
-                   "#define __attribute__(x)\n"
-                   "#define section(x)\n";
+                "#ifdef global\n"
+                "#undef global\n"
+                "#endif\n"
+                "#define global\n"
+
+                "#ifdef share\n"
+                "#undef share\n"
+                "#endif\n"
+                "#define share\n"
+
+                "#ifdef gsm\n"
+                "#undef gsm\n"
+                "#endif\n"
+                "#define gsm\n"
+
+                "#ifdef __attribute__\n"
+                "#undef __attribute__\n"
+                "#endif\n"
+                "#define __attribute__(x)\n"
+
+                "#ifdef section\n"
+                "#undef section\n"
+                "#endif\n"
+                "#define section(x)\n";
+
         PP.setPredefines(predefs);
     }
-    // ModifyMode 不添加这些预处理定义，保持原有属性
 }
-
-// 使用外部声明的命令行选项
-extern llvm::cl::opt<bool> LocateMode;
-extern llvm::cl::opt<bool> RestoreMode;
-extern llvm::cl::opt<bool> ModifyMode;
-extern json outputJson;
-
-std::unique_ptr<clang::ASTConsumer> 
-CustomFrontendAction::CreateASTConsumer(
-    clang::CompilerInstance &CI, 
-    llvm::StringRef InFile) 
-{
-    // 根据模式选择是否配置预处理器
-    if (!getModifyMode()) {  // 只在非修改模式下应用预处理配置
-        PreprocessorConfig::configure(CI);
-    }
-    
-    // 创建匹配查找器
-    auto Finder = std::make_unique<clang::ast_matchers::MatchFinder>();
-    
-    if (getLocateMode()) {
-        // 定位模式的匹配器
-        auto matcher = forStmt(
-            hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
-            hasBody(hasDescendant(arraySubscriptExpr().bind("arrayAccess"))),
-            hasAncestor(functionDecl().bind("containingFunction")))
-            .bind("forLoop");
-            
-        Finder->addMatcher(matcher, new ExtendedArrayMatcher(outputJson));
-    }
-    else if (getRestoreMode()) {
-        if (!inputJson.is_null()) {
-            // 遍历JSON文件中的每个位置信息
-            for (const auto &item : inputJson) {
-                auto matcher = arraySubscriptExpr(
-                    hasAncestor(
-                        functionDecl(hasName(item["function"].get<std::string>()))),
-                    hasAncestor(
-                        forStmt().bind("forLoop")))
-                    .bind("arrayAccess");
-
-                Finder->addMatcher(matcher, new ArrayMatcher(outputJson));
-            }
-        }
-    }
-    else if (getModifyMode()) {
-        // 修改模式的匹配器
-        auto matcher = arraySubscriptExpr(
-            hasAncestor(
-                forStmt().bind("forLoop")))
-            .bind("arrayAccess");
-
-        Finder->addMatcher(matcher, new ExtendedCodeModifier(TheRewriter));
-    }
-    
-    // 创建并返回AST消费者
-    return Finder->newASTConsumer();
-}
-
-std::unique_ptr<clang::tooling::FrontendActionFactory> 
-createCustomFrontendActionFactory() {
-    class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory {
-    public:
-        std::unique_ptr<clang::FrontendAction> create() override {
-            return std::make_unique<CustomFrontendAction>();
-        }
-    };
-    
-    return std::make_unique<CustomFrontendActionFactory>();
-}-------
+-------
 
 文件的相对路径：src/code_modifier.cpp
 文件内容：
@@ -827,37 +985,32 @@ void CodeModifier::run(const clang::ast_matchers::MatchFinder::MatchResult &Resu
     clang::SourceLocation loc = arrayExpr->getBeginLoc();
 
     // 获取完整的源代码，包括属性
-    clang::CharSourceRange range = clang::CharSourceRange::getCharRange(
-        arrayExpr->getBeginLoc(),
-        arrayExpr->getEndLoc());
+    clang::CharSourceRange range =
+        clang::CharSourceRange::getCharRange(arrayExpr->getBeginLoc(), arrayExpr->getEndLoc());
     std::string originalCode = clang::Lexer::getSourceText(range, SM, LangOpts).str();
 
     // 修改代码时保持原有属性
     rewrite.InsertText(loc, "/* Array access modified */\n" + originalCode, true);
 }
 
-void ExtendedCodeModifier::addBoundsCheck(
-    const clang::ArraySubscriptExpr *Array, const clang::ForStmt *Loop)
+void ExtendedCodeModifier::addBoundsCheck(const clang::ArraySubscriptExpr *Array, const clang::ForStmt *Loop)
 {
     clang::SourceLocation loc = Array->getBeginLoc();
 
     // 获取数组名和索引变量名
     std::string arrayName;
-    if (const auto *baseExpr = llvm::dyn_cast<clang::DeclRefExpr>(Array->getBase()->IgnoreParenImpCasts()))
-    {
+    if (const auto *baseExpr = llvm::dyn_cast<clang::DeclRefExpr>(Array->getBase()->IgnoreParenImpCasts())) {
         arrayName = baseExpr->getNameInfo().getAsString();
     }
 
     std::string indexName;
-    if (const auto *idx = llvm::dyn_cast<clang::DeclRefExpr>(Array->getIdx()->IgnoreParenImpCasts()))
-    {
+    if (const auto *idx = llvm::dyn_cast<clang::DeclRefExpr>(Array->getIdx()->IgnoreParenImpCasts())) {
         indexName = idx->getNameInfo().getAsString();
     }
 
     // 生成适当的边界检查代码
     std::string check = "/* 边界检查 */\n";
-    check += "if (" + indexName + " >= sizeof(" + arrayName + ")/sizeof(" +
-             arrayName + "[0])) {\n";
+    check += "if (" + indexName + " >= sizeof(" + arrayName + ")/sizeof(" + arrayName + "[0])) {\n";
     check += "    /* 根据函数返回类型处理错误情况 */\n";
     check += "    errno = ERANGE;\n";
     check += "    return;\n";
@@ -882,10 +1035,11 @@ void ExtendedCodeModifier::addParallelizationHint(const clang::ForStmt *Loop)
 
 文件的相对路径：src/main.cpp
 文件内容：
-#include "util.h"
 #include "array_matcher.h"
 #include "code_modifier.h"
-#include "preprocessor_config.h"
+#include "frontend_action.h"
+#include "util.h"
+// #include "testHandler.h"
 #include <fstream>
 #include <iostream>
 
@@ -895,38 +1049,23 @@ using namespace llvm;
 // 命令行选项
 static cl::OptionCategory ToolCategory("Array Analysis Tool Options");
 
-static cl::opt<std::string> OutputFile(
-    "output",
-    cl::desc("指定输出文件"),
-    cl::value_desc("filename"),
-    cl::cat(ToolCategory));
+static cl::opt<std::string> OutputFile("output", cl::desc("指定输出文件"), cl::value_desc("filename"),
+                                       cl::cat(ToolCategory));
 
-static cl::opt<std::string> InputFile(
-    "input",
-    cl::desc("指定输入JSON文件"),
-    cl::value_desc("filename"),
-    cl::cat(ToolCategory));
+static cl::opt<std::string> InputFile("input", cl::desc("指定输入JSON文件"), cl::value_desc("filename"),
+                                      cl::cat(ToolCategory));
 
 // 定义并导出命令行选项
-llvm::cl::opt<bool> LocateMode(
-    "locate",
-    llvm::cl::desc("启用定位模式"),
-    llvm::cl::cat(ToolCategory));
+llvm::cl::opt<bool> LocateMode("locate", llvm::cl::desc("启用定位模式"), llvm::cl::cat(ToolCategory));
 
-llvm::cl::opt<bool> RestoreMode(
-    "restore",
-    llvm::cl::desc("启用恢复模式"),
-    llvm::cl::cat(ToolCategory));
+llvm::cl::opt<bool> RestoreMode("restore", llvm::cl::desc("启用恢复模式"), llvm::cl::cat(ToolCategory));
 
-llvm::cl::opt<bool> ModifyMode(
-    "modify",
-    llvm::cl::desc("启用修改模式"),
-    llvm::cl::cat(ToolCategory));
+llvm::cl::opt<bool> ModifyMode("modify", llvm::cl::desc("启用修改模式"), llvm::cl::cat(ToolCategory));
 
 // 定义getter函数
-llvm::cl::opt<bool>& getLocateMode() { return LocateMode; }
-llvm::cl::opt<bool>& getRestoreMode() { return RestoreMode; }
-llvm::cl::opt<bool>& getModifyMode() { return ModifyMode; }
+llvm::cl::opt<bool> &getLocateMode() { return LocateMode; }
+llvm::cl::opt<bool> &getRestoreMode() { return RestoreMode; }
+llvm::cl::opt<bool> &getModifyMode() { return ModifyMode; }
 
 json inputJson = json::array();
 json outputJson = json::array();
@@ -936,36 +1075,36 @@ int main(int argc, const char **argv)
 {
     // 解析命令行选项
     auto ExpectedParser = CommonOptionsParser::create(argc, argv, ToolCategory);
-    if (!ExpectedParser)
-    {
+    if (!ExpectedParser) {
         llvm::errs() << ExpectedParser.takeError();
         return 1;
     }
 
     CommonOptionsParser &OptionsParser = ExpectedParser.get();
-    ClangTool Tool(OptionsParser.getCompilations(),
-                   OptionsParser.getSourcePathList());
+    ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
 
     MatchFinder Finder;
-
-    if (getLocateMode())
-    {
+    if (getLocateMode()) {
         // 使用自定义的 FrontendAction
         if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
+        // if (Tool.run(newFrontendActionFactory<MyFrontendAction>().get()) != 0)
+        //     return 1;
 
         // 输出JSON文件
-        if (!OutputFile.empty())
-        {
+        if (!OutputFile.empty()) {
             std::ofstream out(OutputFile);
+            if (!out.is_open()) {
+                llvm::errs() << "无法打开输出文件\n";
+                return 1;
+            }
+            llvm::outs() << "输出 JSON 内容：" << outputJson.dump(4) << "\n";
             out << outputJson.dump(4);
+            out.close();
         }
-    }
-    else if (getRestoreMode())
-    {
+    } else if (getRestoreMode()) {
         // 恢复模式：从JSON文件读取位置信息并重新定位
-        if (InputFile.empty())
-        {
+        if (InputFile.empty()) {
             llvm::errs() << "错误：未指定输入JSON文件\n";
             return 1;
         }
@@ -975,16 +1114,13 @@ int main(int argc, const char **argv)
         input >> inputJson;
 
         // 遍历JSON文件中的每个位置信息
-        for (const auto &item : inputJson)
-        {
+        for (const auto &item : inputJson) {
             // 构建匹配器，根据函数名和位置信息定位代码
             auto matcher = arraySubscriptExpr(
                                // 匹配函数名
-                               hasAncestor(
-                                   functionDecl(hasName(item["function"].get<std::string>()))),
+                               hasAncestor(functionDecl(hasName(item["function"].get<std::string>()))),
                                // 匹配for循环
-                               hasAncestor(
-                                   forStmt().bind("forLoop")))
+                               hasAncestor(forStmt().bind("forLoop")))
                                .bind("arrayAccess");
 
             // 创建回调并添加匹配器
@@ -996,80 +1132,42 @@ int main(int argc, const char **argv)
             return 1;
 
         // 输出恢复的位置信息
-        if (!OutputFile.empty())
-        {
+        if (!OutputFile.empty()) {
             std::ofstream out(OutputFile);
             out << outputJson.dump(4);
         }
-    }
-    else if (getModifyMode())
-    {
+    } else if (getModifyMode()) {
         // 检查输入文件
-        if (InputFile.empty())
-        {
+        if (InputFile.empty()) {
             llvm::errs() << "错误：修改模式需要指定输入JSON文件\n";
             return 1;
         }
 
         // 读取JSON文件
         std::ifstream input(InputFile);
-        try
-        {
+        try {
             input >> inputJson;
-        }
-        catch (const json::exception &e)
-        {
+        } catch (const json::exception &e) {
             llvm::errs() << "JSON文件解析错误: " << e.what() << "\n";
             return 1;
         }
 
-        // 创建重写器
-        Rewriter TheRewriter;
-
-        // 构建匹配器
-        MatchFinder Finder;
-
-        // 遍历JSON文件中的每个位置信息
-        for (const auto &item : inputJson)
-        {
-            try
-            {
-                auto matcher = arraySubscriptExpr(
-                                   hasAncestor(
-                                       functionDecl(hasName(item["function"].get<std::string>()))),
-                                   hasAncestor(
-                                       forStmt().bind("forLoop")))
-                                   .bind("arrayAccess");
-
-                // 创建扩展的代码修改器
-                ExtendedCodeModifier *ModCallback = new ExtendedCodeModifier(TheRewriter);
-                Finder.addMatcher(matcher, ModCallback);
-            }
-            catch (const json::exception &e)
-            {
-                llvm::errs() << "JSON数据处理错误: " << e.what() << "\n";
-                return 1;
-            }
-        }
-
+        // 运行工具
         if (Tool.run(createCustomFrontendActionFactory().get()) != 0)
             return 1;
 
         // 输出修改后的代码
-        if (!OutputFile.empty())
-        {
+        if (!OutputFile.empty()) {
             std::error_code EC;
             llvm::raw_fd_ostream OS(OutputFile, EC);
-            if (EC)
-            {
+            if (EC) {
                 llvm::errs() << "打开输出文件错误: " << EC.message() << "\n";
                 return 1;
             }
 
             const RewriteBuffer *RewriteBuf =
                 TheRewriter.getRewriteBufferFor(TheRewriter.getSourceMgr().getMainFileID());
-            if (!RewriteBuf)
-            {
+            if (!RewriteBuf) {
                 llvm::errs() << "没有对源文件进行修改。\n";
                 return 1;
             }
@@ -1079,9 +1177,7 @@ int main(int argc, const char **argv)
             OS << "#include \"hthread_device.h\"\n\n";
             OS << std::string(RewriteBuf->begin(), RewriteBuf->end());
         }
-    }
-    else
-    {
+    } else {
         llvm::errs() << "错误：请指定运行模式（-locate、-restore 或 -modify）\n";
         return 1;
     }

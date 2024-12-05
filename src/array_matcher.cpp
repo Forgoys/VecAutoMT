@@ -24,15 +24,15 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
     }
 
     // 检查行号是否在预期范围内
-    unsigned int lineNum = SM.getSpellingLineNumber(forStmt->getBeginLoc());
-
-    // 验证循环条件
-    if (!isSimpleIncrement(forStmt->getInc()))
-        return;
-
-    // 验证数组访问
-    if (!isArrayIndexFromLoop(arrayExpr, loopVar))
-        return;
+    // unsigned int lineNum = SM.getSpellingLineNumber(forStmt->getBeginLoc());
+    //
+    // // 验证循环条件
+    // if (!isSimpleIncrement(forStmt->getInc()))
+    //     return;
+    //
+    // // 验证数组访问
+    // if (!isArrayIndexFromLoop(arrayExpr, loopVar))
+    //     return;
 
     // 收集位置信息
     ArrayAccessInfo info;
@@ -54,7 +54,7 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
         loc.sourceText = Lexer::getSourceText(CharSourceRange::getCharRange(
                                                   start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
                                               SM, LangOptions())
-                             .str();
+                .str();
 
         return loc;
     };
@@ -73,7 +73,7 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
         loc.sourceText = Lexer::getSourceText(CharSourceRange::getCharRange(
                                                   start, Lexer::getLocForEndOfToken(end, 0, SM, LangOptions())),
                                               SM, LangOptions())
-                             .str();
+                .str();
 
         return loc;
     };
@@ -93,46 +93,128 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
         }
     }
 
+    // 在 array_matcher.cpp 的 run 方法中修改 JSON 处理部分
     try {
-        // 构建JSON输出
-        json arrayJson;
-        arrayJson["filename"] = info.arrayLocation.filename;
-        arrayJson["function"] = info.arrayLocation.functionName;
-        arrayJson["forLoop"] = json::object();
-        arrayJson["forLoop"]["startLine"] = info.forLoopLocation.startLine;
-        arrayJson["forLoop"]["endLine"] = info.forLoopLocation.endLine;
-        arrayJson["forLoop"]["sourceText"] = info.forLoopLocation.sourceText;
+        llvm::outs() << "正在处理新的数组访问信息:\n";
 
-        // 添加数组信息
-        json arrayInfo = json::object();
-        arrayInfo["name"] = info.arrayName;
-        arrayInfo["indexVar"] = info.indexVarName;
-        arrayInfo["line"] = info.arrayLocation.startLine;
-        arrayInfo["sourceText"] = info.arrayLocation.sourceText;
+        // 更新数组名称
+        const Expr *base = arrayExpr->getBase()->IgnoreParenImpCasts();
+        if (const auto *declRef = dyn_cast<DeclRefExpr>(base)) {
+            info.arrayName = declRef->getDecl()->getNameAsString();
+        } else {
+            info.arrayName = base->getType().getAsString();
+        }
 
-        // 检查是否已存在相同的forLoop信息
-        bool found = false;
-        for (auto &item : outputJson) {
-            try {
-                if (item.at("function") == arrayJson["function"] &&
-                    item.at("forLoop").at("startLine") == arrayJson["forLoop"]["startLine"]) {
-                    if (!item.contains("arrays")) {
-                        item["arrays"] = json::array();
+        if (!outputJson.is_array()) {
+            llvm::outs() << "初始化 outputJson 为空数组\n";
+            outputJson = json::array();
+        }
+
+        // 创建数组信息对象
+        json arrayInfo = json::object({
+            {"name", info.arrayName},
+            {"indexVar", info.indexVarName},
+            {"line", info.arrayLocation.startLine},
+            {"sourceText", info.arrayLocation.sourceText}
+        });
+
+        // 查找匹配的文件
+        bool fileFound = false;
+        for (auto &fileEntry: outputJson) {
+            if (fileEntry["filename"] == info.arrayLocation.filename) {
+                fileFound = true;
+
+                // 查找匹配的函数
+                bool functionFound = false;
+                for (auto &funcEntry: fileEntry["functions"]) {
+                    if (funcEntry["name"] == info.arrayLocation.functionName) {
+                        functionFound = true;
+
+                        // 查找匹配的循环
+                        bool loopFound = false;
+                        for (auto &loopEntry: funcEntry["forLoops"]) {
+                            if (loopEntry["startLine"] == info.forLoopLocation.startLine) {
+                                loopFound = true;
+
+                                // 检查是否已存在相同的数组访问
+                                bool arrayExists = false;
+                                for (const auto &arr: loopEntry["arrays"]) {
+                                    if (arr["name"] == info.arrayName &&
+                                        arr["line"] == info.arrayLocation.startLine) {
+                                        arrayExists = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!arrayExists) {
+                                    llvm::outs() << "添加新的数组访问: " << info.arrayName << "\n";
+                                    loopEntry["arrays"].push_back(arrayInfo);
+                                }
+                                break;
+                            }
+                        }
+
+                        if (!loopFound) {
+                            // 创建新的循环条目
+                            json loopEntry = json::object({
+                                {"startLine", info.forLoopLocation.startLine},
+                                {"endLine", info.forLoopLocation.endLine},
+                                {"sourceText", info.forLoopLocation.sourceText},
+                                {"arrays", json::array({arrayInfo})}
+                            });
+                            funcEntry["forLoops"].push_back(loopEntry);
+                        }
+                        break;
                     }
-                    item["arrays"].push_back(arrayInfo);
-                    found = true;
-                    break;
                 }
-            } catch (const json::exception &e) {
-                llvm::errs() << "JSON处理错误: " << e.what() << "\n";
-                continue;
+
+                if (!functionFound) {
+                    // 创建新的函数条目
+                    json funcEntry = json::object({
+                        {"name", info.arrayLocation.functionName},
+                        {
+                            "forLoops", json::array({
+                                json::object({
+                                    {"startLine", info.forLoopLocation.startLine},
+                                    {"endLine", info.forLoopLocation.endLine},
+                                    {"sourceText", info.forLoopLocation.sourceText},
+                                    {"arrays", json::array({arrayInfo})}
+                                })
+                            })
+                        }
+                    });
+                    fileEntry["functions"].push_back(funcEntry);
+                }
+                break;
             }
         }
 
-        if (!found) {
-            arrayJson["arrays"] = json::array({arrayInfo});
-            outputJson.push_back(arrayJson);
+        if (!fileFound) {
+            // 创建新的文件条目
+            json fileEntry = json::object({
+                {"filename", info.arrayLocation.filename},
+                {
+                    "functions", json::array({
+                        json::object({
+                            {"name", info.arrayLocation.functionName},
+                            {
+                                "forLoops", json::array({
+                                    json::object({
+                                        {"startLine", info.forLoopLocation.startLine},
+                                        {"endLine", info.forLoopLocation.endLine},
+                                        {"sourceText", info.forLoopLocation.sourceText},
+                                        {"arrays", json::array({arrayInfo})}
+                                    })
+                                })
+                            }
+                        })
+                    })
+                }
+            });
+            outputJson.push_back(fileEntry);
         }
+
+        llvm::outs() << "当前 outputJson 内容:\n" << outputJson.dump(2) << "\n\n";
     } catch (const json::exception &e) {
         llvm::errs() << "JSON处理错误: " << e.what() << "\n";
         return;
@@ -140,12 +222,12 @@ void ArrayMatcher::run(const MatchFinder::MatchResult &Result)
 
     // 终端输出
     llvm::outs() << "发现数组访问:\n"
-                 << "  文件: " << info.arrayLocation.filename << "\n"
-                 << "  函数: " << info.arrayLocation.functionName << "\n"
-                 << "  循环位置: 第" << info.forLoopLocation.startLine << "行\n"
-                 << "  数组: " << info.arrayName << "\n"
-                 << "  索引变量: " << info.indexVarName << "\n"
-                 << "  源代码: " << info.arrayLocation.sourceText << "\n\n";
+            << "  文件: " << info.arrayLocation.filename << "\n"
+            << "  函数: " << info.arrayLocation.functionName << "\n"
+            << "  循环位置: 第" << info.forLoopLocation.startLine << "行\n"
+            << "  数组: " << info.arrayName << "\n"
+            << "  索引变量: " << info.indexVarName << "\n"
+            << "  源代码: " << info.arrayLocation.sourceText << "\n\n";
 }
 
 bool ArrayMatcher::isSimpleIncrement(const Stmt *Inc) const

@@ -2,7 +2,6 @@
 #define ARRAY_MATCHER_H
 
 #include "util.h"
-
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::tooling;

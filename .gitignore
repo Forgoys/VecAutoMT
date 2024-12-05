@@ -4,5 +4,9 @@
 # 忽略 VSCode 的设置文件夹 .vscode
 .vscode/
 
+.idea/
+
+*.o
+
 all_files_content.txt
 print_files.sh

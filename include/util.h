@@ -2,6 +2,7 @@
 #define UTIL_H
 
 #include "json.hpp"
+#include "fifo_map.hpp"
 #include "clang/AST/AST.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
@@ -19,7 +20,12 @@
 #include <system_error>
 #include <vector>
 
-using json = nlohmann::json;
+// 首先定义使用 fifo_map 的 json 类型
+template<class K, class V, class dummy_compare, class A>
+using fifo_map_type = nlohmann::fifo_map<K, V, nlohmann::fifo_map_compare<K>, A>;
+
+// 然后定义使用 fifo_map 的 json
+using json = nlohmann::basic_json<fifo_map_type>;
 
 // 工具运行模式
 enum class ToolMode

@@ -1,0 +1,31 @@
+[
+    {
+        "filename": "/Users/limutou/work/postG/Project/Autotuning/project/VecAutoMT/test/sample.c",
+        "functions": [
+            {
+                "name": "daxpy_single",
+                "forLoops": [
+                    {
+                        "startLine": 10,
+                        "endLine": 12,
+                        "sourceText": "for (uint64_t i = 0; i < n; ++i) {\n        y[i + 1] = a * x[i - 1] + y[2 * i];\n    }",
+                        "arrays": [
+                            {
+                                "name": "y",
+                                "indexVar": "i",
+                                "line": 11,
+                                "sourceText": "y[i + 1]"
+                            },
+                            {
+                                "name": "x",
+                                "indexVar": "i",
+                                "line": 11,
+                                "sourceText": "x[i - 1]"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]

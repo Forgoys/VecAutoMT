@@ -2,7 +2,11 @@
 
 include make.conf
 
-HTHREADS_INCLUDE_PATH:=${HTHREADS_ROOT_PATH}/include 
+# 获取CPU核心数，用于并行编译
+NPROCS = $(shell nproc || sysctl -n hw.ncpu || echo 2)
+MAKEFLAGS += -j$(NPROCS)
+
+HTHREADS_INCLUDE_PATH:=${HTHREADS_ROOT_PATH}/include
 DEV_CC_INCLUDE_PATH:=${DEV_CC_ROOT_PATH}/include
 
 DEV_INCLUDE_PATH:=${DEV_CC_INCLUDE_PATH} ${HTHREADS_INCLUDE_PATH}
@@ -36,9 +40,10 @@ TOOL_LINK_FLAGS := -L$(LLVM_HOME)/lib -Wl,-rpath,$(LLVM_HOME)/lib $(LLVM_LDFLAGS
 # 在运行时指定资源目录
 ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/18
 
-# 源文件
-SRCS := src/main.cpp src/array_matcher.cpp src/code_modifier.cpp src/preprocessor_config.cpp
-OBJS := $(SRCS:.cpp=.o)
+# 源文件和目标文件
+SRC_DIR := src
+SRCS := $(wildcard $(SRC_DIR)/*.cpp)
+OBJS := $(SRCS:%.cpp=%.o)
 
 # 编译目标
 .PHONY: all build run clean
@@ -48,15 +53,16 @@ all: build
 build: bin/VecAutoMT
 
 bin/VecAutoMT: $(OBJS)
-	mkdir -p bin
+	@mkdir -p bin
 	$(CLANG) $(TOOL_CLANG_FLAGS) -o $@ $^ $(TOOL_LINK_FLAGS)
 
-%.o: %.cpp
-	$(CLANG) $(TOOL_CLANG_FLAGS) -c -o $@ $<
+$(SRC_DIR)/%.o: $(SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CLANG) $(TOOL_CLANG_FLAGS) -c $< -o $@
 
 run:
 	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
-	bin/VecAutoMT -locate test/sample.c -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+	bin/VecAutoMT -locate test/sample.c -output test/output.json -- $(DEV_INCLUDE_FLAGS) $(ARGS)
 
 clean:
 	rm -rf bin
