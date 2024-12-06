@@ -7,8 +7,10 @@
 
 static inline void daxpy_single(uint64_t n, double a, double *x, double *y)
 {
+    int b = 2;
     for (uint64_t i = 0; i < n; ++i) {
-        y[i + 1] = a * x[i - 1] + y[2 * i];
+      int tmp = a * x[i];
+      y[i + 1] = tmp + b * y[i - 1];
     }
 }
 

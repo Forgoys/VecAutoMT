@@ -45,8 +45,15 @@ SRC_DIR := src
 SRCS := $(wildcard $(SRC_DIR)/*.cpp)
 OBJS := $(SRCS:%.cpp=%.o)
 
-# 编译目标
-.PHONY: all build run clean
+# 输入输出文件路径
+TEST_DIR := test
+SRC_FILE := $(TEST_DIR)/sample.c
+LOCATE_OUTPUT := $(TEST_DIR)/locate_output.json
+RESTORE_OUTPUT := $(TEST_DIR)/restore_output.json
+MODIFY_OUTPUT := $(TEST_DIR)/modified.c
+
+# Run mode and arguments
+.PHONY: all build run run-locate run-restore run-modify clean
 
 all: build
 
@@ -60,10 +67,40 @@ $(SRC_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CLANG) $(TOOL_CLANG_FLAGS) -c $< -o $@
 
-run:
+# 将run目标分解为具体的运行模式
+run-locate: build
+	@mkdir -p $(TEST_DIR)
 	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
-	bin/VecAutoMT -locate test/sample.c -output test/output.json -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+	bin/VecAutoMT -locate $(SRC_FILE) -output $(LOCATE_OUTPUT) -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+
+run-restore: build
+	@mkdir -p $(TEST_DIR)
+	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
+	bin/VecAutoMT -restore $(SRC_FILE) -input $(LOCATE_OUTPUT) -output $(RESTORE_OUTPUT) -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+
+run-modify: build
+	@mkdir -p $(TEST_DIR)
+	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
+	bin/VecAutoMT -modify $(SRC_FILE) -input $(RESTORE_OUTPUT) -output $(MODIFY_OUTPUT) -- $(DEV_INCLUDE_FLAGS) $(ARGS)
+
+# 使用run目标来调用具体的运行模式
+run:
+	@if [ "$(filter locate,$(MAKECMDGOALS))" ]; then \
+		$(MAKE) run-locate; \
+	elif [ "$(filter restore,$(MAKECMDGOALS))" ]; then \
+		$(MAKE) run-restore; \
+	elif [ "$(filter modify,$(MAKECMDGOALS))" ]; then \
+		$(MAKE) run-modify; \
+	else \
+		echo "Please specify a mode: make run locate|restore|modify"; \
+		exit 1; \
+	fi
+
+# Additional targets to allow 'make run MODE'
+locate restore modify:
+	@:
 
 clean:
 	rm -rf bin
 	rm -f $(OBJS)
+	rm -f $(LOCATE_OUTPUT) $(RESTORE_OUTPUT) $(MODIFY_OUTPUT)

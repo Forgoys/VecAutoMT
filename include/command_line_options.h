@@ -20,6 +20,16 @@ public:
     clang::tooling::CommonOptionsParser& getOptionsParser();
     const clang::tooling::CommonOptionsParser& getOptionsParser() const;
 
+    [[nodiscard]] std::string toString() const {
+        return "CommandLineOptions {\n"
+               "  LocateMode: " + std::string(getLocateMode() ? "true" : "false") + ",\n"
+               "  RestoreMode: " + std::string(getRestoreMode() ? "true" : "false") + ",\n"
+               "  ModifyMode: " + std::string(getModifyMode() ? "true" : "false") + ",\n"
+               "  InputFile: '" + getInputFile() + "',\n"
+               "  OutputFile: '" + getOutputFile() + "'\n"
+               "}";
+    }
+    
 private:
     CommandLineOptions() = default;
     static void registerOptions();
@@ -32,6 +42,7 @@ private:
     static llvm::cl::opt<std::string> OutputFile;
 
     std::unique_ptr<clang::tooling::CommonOptionsParser> OptionsParser;
+
 };
 
 #endif // COMMAND_LINE_OPTIONS_H

@@ -1,0 +1,59 @@
+=== Diagnostic Log ===
+Time: 2024-12-06, 16:23:48
+==================
+
+
+--------------------------------------------------------------------------------
+Warning
+
+In file: /Users/limutou/work/postG/Project/Autotuning/project/env/dsp_compiler/include/sys/cdefs.h:265:10
+
+Message: '__nonnull' macro redefined
+
+Relevant Code:
+263 |    must not be NULL.  */
+264 | #if __GNUC_PREREQ (3,3)
+265 | # define __nonnull(params) __attribute__ ((__nonnull__ params))
+266 | #else
+267 | # define __nonnull(params)
+    |          ^
+
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Note
+
+Message: previous definition is here
+
+Relevant Code:
+357 | #define __DECIMAL_DIG__ __LDBL_DECIMAL_DIG__
+358 | #define __SSP__ 1
+359 | #define __nonnull _Nonnull
+360 | #define __null_unspecified _Null_unspecified
+361 | #define __nullable _Nullable
+    |         ^
+
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Fatal Error
+
+In file: /Users/limutou/work/postG/Project/Autotuning/project/env/hthreads/include/hthread_device.h:9:10
+
+Message: 'stdbool.h' file not found
+
+Relevant Code:
+7 | #define HTHREAD_DEVICE_H_
+8 | 
+9 | #include <stdbool.h>
+10 | #include <stdarg.h>
+11 | #include <stddef.h>
+  |          ^
+
+--------------------------------------------------------------------------------
+
+Diagnostic Statistics:
+====================
+Total Errors  : 1
+Total Warnings: 1
+====================

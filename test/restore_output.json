@@ -1,0 +1,45 @@
+[
+    {
+        "filename": "/Users/limutou/work/postG/Project/Autotuning/project/VecAutoMT/test/sample.c",
+        "arrayAccesses": [
+            {
+                "arrayName": "x",
+                "functionName": "daxpy_single",
+                "indexVariable": "i",
+                "location": {
+                    "filename": "/Users/limutou/work/postG/Project/Autotuning/project/VecAutoMT/test/sample.c",
+                    "startLine": 12,
+                    "endLine": 12,
+                    "sourceText": "x[i]"
+                },
+                "loop": {
+                    "startLine": 11,
+                    "endLine": 14,
+                    "sourceText": "for (uint64_t i = 0; i < n; ++i) {\n      int tmp = a * x[i];\n      y[i + 1] = tmp + b * y[i - 1];\n    }",
+                    "bounds": {
+                        "start": 0,
+                        "end": 6507729260,
+                        "step": 1,
+                        "isConstBound": false
+                    }
+                },
+                "computations": [
+                    {
+                        "type": "read",
+                        "expression": "a * x[i]",
+                        "location": {
+                            "startLine": 12,
+                            "endLine": 12,
+                            "sourceText": "a * x[i]"
+                        },
+                        "dependencies": [
+                            "a",
+                            "x",
+                            "i"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]

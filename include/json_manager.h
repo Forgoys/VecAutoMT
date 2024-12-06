@@ -2,6 +2,7 @@
 #define JSON_MANAGER_H
 
 #include "array_matcher.h"
+#include "command_line_options.h"
 #include "util.h"
 #include <string>
 #include <fstream>
@@ -27,6 +28,14 @@ private:
     json outputJson = json::array();
 
     void validateInputJson() const;
+    // 处理locate模式
+    void handleLocateMode(const ArrayAccessInfo& info);
+
+    // 处理restore模式
+    void handleRestoreMode(const ArrayAccessInfo& info);
+
+    // 处理modify模式
+    void handleModifyMode(const ArrayAccessInfo& info) {};
 };
 
 #endif // JSON_MANAGER_H

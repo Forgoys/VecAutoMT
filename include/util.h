@@ -30,9 +30,9 @@ using json = nlohmann::basic_json<fifo_map_type>;
 // 工具运行模式
 enum class ToolMode
 {
-    LOCATE,  // 定位模式
+    LOCATE, // 定位模式
     RESTORE, // 恢复模式
-    MODIFY   // 修改模式
+    MODIFY // 修改模式
 };
 
 // 位置信息结构
@@ -46,8 +46,20 @@ struct LocationInfo
 
     // 转换为JSON
     json toJson() const;
+
     // 从JSON构造
     static LocationInfo fromJson(const json &j);
+
+    // 打印结构信息
+    [[nodiscard]] std::string toString() const {
+        return "LocationInfo {\n"
+               "  filename: '" + filename + "',\n"
+               "  functionName: '" + functionName + "',\n"
+               "  startLine: " + std::to_string(startLine) + ",\n"
+               "  endLine: " + std::to_string(endLine) + ",\n"
+               "  sourceText: '" + sourceText + "'\n"
+               "}";
+    }
 };
 
 // 工具配置
