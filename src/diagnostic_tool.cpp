@@ -16,20 +16,18 @@ MyDiagnosticConsumer::MyDiagnosticConsumer(bool logToFile,
       WarningCount(0)
 {
     DiagOpts = std::make_shared<clang::DiagnosticOptions>();
-    DiagOpts->ShowColors = true;
+    DiagOpts->ShowColors = !LogToFile; // 只在终端输出时启用颜色
     DiagOpts->ShowCarets = true;
     DiagOpts->ShowFixits = true;
-    DiagOpts->TabStop = 4; // 设置制表符宽度
-    DiagOpts->MessageLength = 120; // 设置消息最大长度
+    DiagOpts->TabStop = 4;
+    DiagOpts->MessageLength = 120;
 
-    // 清空日志文件并写入头部信息
     if (LogToFile) {
         std::error_code EC;
         llvm::raw_fd_ostream OS(LogFilename, EC, llvm::sys::fs::OF_None);
         if (EC) {
             llvm::errs() << "Error opening log file: " << EC.message() << "\n";
         } else {
-            // 获取当前时间并格式化
             auto now = std::chrono::system_clock::now();
             auto in_time_t = std::chrono::system_clock::to_time_t(now);
             std::stringstream ss;
@@ -42,10 +40,35 @@ MyDiagnosticConsumer::MyDiagnosticConsumer(bool logToFile,
     }
 }
 
+const char *MyDiagnosticConsumer::GetSeverityColor(clang::DiagnosticsEngine::Level Level) const
+{
+    if (LogToFile) return ""; // 日志文件中不使用颜色
+
+    switch (Level) {
+        case clang::DiagnosticsEngine::Fatal:
+        case clang::DiagnosticsEngine::Error:
+            return Colors::RED;
+        case clang::DiagnosticsEngine::Warning:
+            return Colors::YELLOW;
+        case clang::DiagnosticsEngine::Note:
+            return Colors::CYAN;
+        case clang::DiagnosticsEngine::Remark:
+            return Colors::GREEN;
+        default:
+            return Colors::RESET;
+    }
+}
+
+std::string MyDiagnosticConsumer::Color(const char *ColorCode) const
+{
+    return LogToFile ? "" : ColorCode; // 日志文件中不使用颜色
+}
+
 void MyDiagnosticConsumer::HandleDiagnostic(clang::DiagnosticsEngine::Level DiagLevel,
                                             const clang::Diagnostic &Info)
 {
     DiagnosticInfo diagInfo;
+    diagInfo.Level = DiagLevel;
 
     // 获取位置信息
     if (Info.getLocation().isValid()) {
@@ -64,7 +87,7 @@ void MyDiagnosticConsumer::HandleDiagnostic(clang::DiagnosticsEngine::Level Diag
     Info.FormatDiagnostic(MessageStr);
     diagInfo.Message = std::string(MessageStr.begin(), MessageStr.end());
 
-    // 设置严重程度
+    // 设置严重程度并更新计数器
     switch (DiagLevel) {
         case clang::DiagnosticsEngine::Fatal:
             diagInfo.Severity = "Fatal Error";
@@ -95,11 +118,35 @@ void MyDiagnosticConsumer::HandleDiagnostic(clang::DiagnosticsEngine::Level Diag
         diagInfo.Category = Category.str();
     }
 
-    // 存储诊断信息
+    // 将诊断信息存入向量
     Diagnostics.push_back(diagInfo);
+}
 
-    // 输出到日志文件或标准错误流
-    OutputDiagnostic(diagInfo);
+// diagnostic_tool.cpp
+void MyDiagnosticConsumer::Finish() {
+    std::error_code EC;
+    std::unique_ptr<llvm::raw_fd_ostream> OS;
+    if (LogToFile) {
+        OS = std::make_unique<llvm::raw_fd_ostream>(
+            LogFilename, EC, llvm::sys::fs::OpenFlags::OF_Append);
+        if (EC) {
+            llvm::errs() << "Error opening log file: " << EC.message() << "\n";
+            return;
+        }
+    }
+
+    PrintStatistics();
+
+    for (const auto &diagInfo : Diagnostics) {
+        std::string Output = FormatDiagnostic(diagInfo);
+        if (LogToFile && OS) {
+            *OS << Output;
+        } else {
+            llvm::errs() << Output;
+        }
+    }
+
+    Clear();
 }
 
 std::string MyDiagnosticConsumer::GetLineContent(const clang::SourceManager &SM,
@@ -159,11 +206,9 @@ std::pair<std::string, std::string> MyDiagnosticConsumer::GetSourceSnippetAndCar
 
                 // 为错误行生成插入符号行
                 if (IsErrorLine) {
-                    // 计算前缀空格
                     std::string Spaces(LinePrefix.length() - 2, ' ');
                     CaretLine = Spaces + "| " + std::string(ColNo - 1, ' ') + "^";
 
-                    // 如果有错误跨度，添加波浪线
                     clang::SourceLocation EndLoc = Info.getLocation();
                     if (EndLoc.isValid()) {
                         unsigned EndCol = SM.getSpellingColumnNumber(EndLoc);
@@ -179,65 +224,112 @@ std::pair<std::string, std::string> MyDiagnosticConsumer::GetSourceSnippetAndCar
     return {Snippet, CaretLine};
 }
 
-void MyDiagnosticConsumer::OutputDiagnostic(const DiagnosticInfo &Info)
-{
-    std::string Output = FormatDiagnostic(Info);
+// void MyDiagnosticConsumer::OutputDiagnostic(const DiagnosticInfo &Info)
+// {
+//     std::string Output = FormatDiagnostic(Info);
+//
+//     if (LogToFile) {
+//         std::error_code EC;
+//         llvm::raw_fd_ostream OS(LogFilename, EC,
+//                                 llvm::sys::fs::OpenFlags::OF_Append);
+//         if (!EC) {
+//             OS << Output;
+//         }
+//     } else {
+//         llvm::errs() << Output;
+//     }
+// }
 
-    if (LogToFile) {
-        std::error_code EC;
-        llvm::raw_fd_ostream OS(LogFilename, EC,
-                                llvm::sys::fs::OpenFlags::OF_Append);
-        if (!EC) {
-            OS << Output;
-        }
-    } else {
-        llvm::errs() << Output;
-    }
-}
-
-std::string MyDiagnosticConsumer::FormatDiagnostic(const DiagnosticInfo &Info)
+std::string MyDiagnosticConsumer::FormatDiagnostic(const DiagnosticInfo &Info) const
 {
     std::string Output;
     llvm::raw_string_ostream OS(Output);
 
-    // 使用更清晰的分隔符
-    OS << "\n" << std::string(80, '-') << "\n";
+    // 使用条件颜色输出
+    const std::string separator(80, '-');
+    OS << "\n" << (LogToFile ? separator : Color(Colors::DIM) + separator + Color(Colors::RESET)) << "\n";
 
-    // 添加严重程度和类别
-    OS << Info.Severity;
+    // 严重程度
+    if (LogToFile) {
+        OS << Info.Severity;
+    } else {
+        OS << Color(GetSeverityColor(Info.Level)) << Color(Colors::BOLD)
+                << Info.Severity << Color(Colors::RESET);
+    }
+
+    // 类别
     if (!Info.Category.empty()) {
-        OS << " [" << Info.Category << "]";
+        if (LogToFile) {
+            OS << " [" << Info.Category << "]";
+        } else {
+            OS << Color(Colors::CYAN) << " [" << Info.Category << "]" << Color(Colors::RESET);
+        }
     }
     OS << "\n\n";
 
-    // 添加位置信息
+    // 文件位置
     if (!Info.Filename.empty()) {
-        OS << "In file: " << Info.Filename << ":" << Info.Line << ":"
-                << Info.Column << "\n\n";
+        if (LogToFile) {
+            OS << "In file: " << Info.Filename << ":" << Info.Line << ":" << Info.Column << "\n\n";
+        } else {
+            OS << Color(Colors::BLUE) << "In file: " << Info.Filename << ":"
+                    << Info.Line << ":" << Info.Column << Color(Colors::RESET) << "\n\n";
+        }
     }
 
-    // 添加错误消息
-    OS << "Message: " << Info.Message << "\n\n";
+    // 错误消息
+    if (LogToFile) {
+        OS << "Message: " << Info.Message << "\n\n";
+    } else {
+        OS << "Message: " << Color(GetSeverityColor(Info.Level))
+                << Info.Message << Color(Colors::RESET) << "\n\n";
+    }
 
-    // 添加代码片段和错误位置标记
+    // 代码片段
     if (!Info.CodeSnippet.empty()) {
-        OS << "Relevant Code:\n" << Info.CodeSnippet;
+        OS << (LogToFile ? "" : Color(Colors::BOLD))
+                << "Relevant Code:\n"
+                << (LogToFile ? "" : Color(Colors::RESET));
+
+        std::istringstream iss(Info.CodeSnippet);
+        std::string line;
+        while (std::getline(iss, line)) {
+            size_t separatorPos = line.find('|');
+            if (separatorPos != std::string::npos && !LogToFile) {
+                // 在终端输出时，行号使用暗色
+                OS << Color(Colors::DIM) << line.substr(0, separatorPos + 1)
+                        << Color(Colors::RESET) << line.substr(separatorPos + 1) << "\n";
+            } else {
+                OS << line << "\n";
+            }
+        }
+
         if (!Info.CaretLine.empty()) {
-            OS << Info.CaretLine;
+            if (LogToFile) {
+                OS << Info.CaretLine;
+            } else {
+                OS << Color(GetSeverityColor(Info.Level)) << Info.CaretLine
+                        << Color(Colors::RESET);
+            }
         }
         OS << "\n";
     }
 
-    // 添加注释信息
+    // 注释信息
     if (!Info.Notes.empty()) {
-        OS << "Additional Notes:\n";
+        OS << (LogToFile ? "" : Color(Colors::BOLD)) << "Additional Notes:\n"
+                << (LogToFile ? "" : Color(Colors::RESET));
         for (const auto &Note: Info.Notes) {
-            OS << "  • " << Note << "\n";
+            if (LogToFile) {
+                OS << "  • " << Note << "\n";
+            } else {
+                OS << Color(Colors::CYAN) << "  • " << Note << Color(Colors::RESET) << "\n";
+            }
         }
         OS << "\n";
     }
 
-    OS << std::string(80, '-') << "\n";
+    OS << (LogToFile ? separator : Color(Colors::DIM) + separator + Color(Colors::RESET)) << "\n";
     return OS.str();
 }
 
@@ -254,13 +346,24 @@ MyDiagnosticConsumer::GetDiagnostics() const
     return Diagnostics;
 }
 
-void MyDiagnosticConsumer::PrintStatistics() const
+void MyDiagnosticConsumer::PrintStatistics()
 {
-    std::string stats = "\nDiagnostic Statistics:\n" +
-                        std::string(20, '=') + "\n" +
-                        "Total Errors  : " + std::to_string(ErrorCount) + "\n" +
-                        "Total Warnings: " + std::to_string(WarningCount) + "\n" +
-                        std::string(20, '=') + "\n";
+    std::string stats;
+    if (LogToFile) {
+        stats = "\nDiagnostic Statistics:\n" +
+                std::string(20, '=') + "\n" +
+                "Total Errors  : " + std::to_string(ErrorCount) + "\n" +
+                "Total Warnings: " + std::to_string(WarningCount) + "\n" +
+                std::string(20, '=') + "\n";
+    } else {
+        stats = Color(Colors::CYAN) + "\nDiagnostic Statistics:\n" +
+                std::string(20, '=') + Color(Colors::RESET) + "\n" +
+                Color(Colors::RED) + "Total Errors  : " + std::to_string(ErrorCount) +
+                Color(Colors::RESET) + "\n" +
+                Color(Colors::YELLOW) + "Total Warnings: " + std::to_string(WarningCount) +
+                Color(Colors::RESET) + "\n" +
+                Color(Colors::CYAN) + std::string(20, '=') + Color(Colors::RESET) + "\n";
+    }
 
     if (LogToFile) {
         std::error_code EC;
@@ -272,3 +375,21 @@ void MyDiagnosticConsumer::PrintStatistics() const
     }
     llvm::errs() << stats;
 }
+
+// void MyDiagnosticConsumer::OutputAllDiagnostics() const
+// {
+//     for (const auto &diagInfo: Diagnostics) {
+//         std::string Output = FormatDiagnostic(diagInfo);
+//
+//         if (LogToFile) {
+//             std::error_code EC;
+//             llvm::raw_fd_ostream OS(LogFilename, EC,
+//                                     llvm::sys::fs::OpenFlags::OF_Append);
+//             if (!EC) {
+//                 OS << Output;
+//             }
+//         } else {
+//             llvm::errs() << Output;
+//         }
+//     }
+// }

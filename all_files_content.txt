@@ -1,3 +1,66 @@
+文件的相对路径：test/tool_diagnostics.log
+文件内容：
+=== Diagnostic Log ===
+Time: 2024-12-06, 19:36:16
+==================
+
+
+--------------------------------------------------------------------------------
+Warning
+
+In file: /Users/limutou/work/postG/Project/Autotuning/project/env/dsp_compiler/include/sys/cdefs.h:265:10
+
+Message: '__nonnull' macro redefined
+
+Relevant Code:
+263 |    must not be NULL.  */
+264 | #if __GNUC_PREREQ (3,3)
+265 | # define __nonnull(params) __attribute__ ((__nonnull__ params))
+266 | #else
+267 | # define __nonnull(params)
+    |          ^
+
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Note
+
+Message: previous definition is here
+
+Relevant Code:
+357 | #define __DECIMAL_DIG__ __LDBL_DECIMAL_DIG__
+358 | #define __SSP__ 1
+359 | #define __nonnull _Nonnull
+360 | #define __null_unspecified _Null_unspecified
+361 | #define __nullable _Nullable
+    |         ^
+
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Fatal Error
+
+In file: /Users/limutou/work/postG/Project/Autotuning/project/env/hthreads/include/hthread_device.h:9:10
+
+Message: 'stdbool.h' file not found
+
+Relevant Code:
+7 | #define HTHREAD_DEVICE_H_
+8 | 
+9 | #include <stdbool.h>
+10 | #include <stdarg.h>
+11 | #include <stddef.h>
+  |          ^
+
+--------------------------------------------------------------------------------
+
+Diagnostic Statistics:
+====================
+Total Errors  : 1
+Total Warnings: 1
+====================
+-------
+
 文件的相对路径：test/sample.c
 文件内容：
 #include <stdint.h>
@@ -185,18 +248,20 @@ public:
 #ifndef FRONTEND_ACTION_H
 #define FRONTEND_ACTION_H
 
-
 #include "util.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/Tooling.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "command_line_options.h"
 #include "json_manager.h"
+#include "diagnostic_tool.h"
+
 // 外部声明的重写器
 extern clang::Rewriter TheRewriter;
 
 // 自定义前端Action类
-class MyFrontendAction : public clang::ASTFrontendAction {
+class MyFrontendAction : public clang::ASTFrontendAction
+{
 protected:
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
         clang::CompilerInstance &CI,
@@ -205,19 +270,23 @@ protected:
     bool BeginSourceFileAction(clang::CompilerInstance &CI) override;
 };
 
-class MyASTConsumer : public clang::ASTConsumer {
+class MyASTConsumer : public clang::ASTConsumer
+{
 private:
     clang::ast_matchers::MatchFinder matchFinder;
 
 public:
     MyASTConsumer();
+
     void HandleTranslationUnit(clang::ASTContext &Context) override;
 };
 
 // 创建自定义前端Action工厂的辅助函数
-std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory();
+std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory(
+    std::shared_ptr<MyDiagnosticConsumer> DiagConsumer);
 
-#endif-------
+#endif
+-------
 
 文件的相对路径：include/json_manager.h
 文件内容：
@@ -273,19 +342,23 @@ private:
 #include "llvm/Support/CommandLine.h"
 #include <string>
 
-class CommandLineOptions {
+class CommandLineOptions
+{
 public:
-    static CommandLineOptions& instance();
+    static CommandLineOptions &instance();
 
     bool getLocateMode() const;
     bool getRestoreMode() const;
     bool getModifyMode() const;
+    bool getDiagnosticLogToFile() const;
+    std::string getDiagnosticLogFile() const;
     std::string getInputFile() const;
     std::string getOutputFile() const;
 
-    void initialize(int argc, const char** argv);
-    clang::tooling::CommonOptionsParser& getOptionsParser();
-    const clang::tooling::CommonOptionsParser& getOptionsParser() const;
+    void initialize(int argc, const char **argv);
+    clang::tooling::CommonOptionsParser &getOptionsParser();
+    const clang::tooling::CommonOptionsParser &getOptionsParser() const;
+    [[nodiscard]] std::string toString() const;
 
 private:
     CommandLineOptions() = default;
@@ -295,6 +368,8 @@ private:
     static llvm::cl::opt<bool> LocateMode;
     static llvm::cl::opt<bool> RestoreMode;
     static llvm::cl::opt<bool> ModifyMode;
+    static llvm::cl::opt<bool> DiagnosticLogToFile;
+    static llvm::cl::opt<std::string> DiagnosticLogFile;
     static llvm::cl::opt<std::string> InputFile;
     static llvm::cl::opt<std::string> OutputFile;
 
@@ -420,6 +495,109 @@ public:
 };
 
 #endif // CODE_MODIFIER_H-------
+
+文件的相对路径：include/diagnostic_tool.h
+文件内容：
+#ifndef DIAGNOSTIC_TOOL_H
+#define DIAGNOSTIC_TOOL_H
+
+#include <clang/Basic/Diagnostic.h>
+#include <clang/Basic/DiagnosticOptions.h>
+#include <clang/Basic/DiagnosticIDs.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/raw_ostream.h>
+#include <string>
+#include <vector>
+#include <memory>
+#include <utility>
+
+// ANSI Color codes
+struct Colors
+{
+    static constexpr const char *RESET = "\033[0m";
+    static constexpr const char *RED = "\033[31m";
+    static constexpr const char *GREEN = "\033[32m";
+    static constexpr const char *YELLOW = "\033[33m";
+    static constexpr const char *BLUE = "\033[34m";
+    static constexpr const char *MAGENTA = "\033[35m";
+    static constexpr const char *CYAN = "\033[36m";
+    static constexpr const char *BOLD = "\033[1m";
+    static constexpr const char *DIM = "\033[2m";
+};
+
+class MyDiagnosticConsumer : public clang::DiagnosticConsumer
+{
+public:
+    // 错误信息的结构体
+    struct DiagnosticInfo
+    {
+        std::string Message; // 错误信息
+        std::string Filename; // 文件名
+        unsigned Line; // 行号
+        unsigned Column; // 列号
+        std::string Severity; // 严重程度
+        std::string Category; // 错误类别
+        std::string CodeSnippet; // 相关代码片段
+        std::string CaretLine; // 错误位置标记行
+        std::vector<std::string> Notes; // 相关的注释信息
+        clang::DiagnosticsEngine::Level Level; // 保存原始级别用于着色
+    };
+
+    MyDiagnosticConsumer(bool logToFile = false,
+                         const std::string &logFilename = "clang_diagnostics.log");
+
+    void HandleDiagnostic(clang::DiagnosticsEngine::Level DiagLevel,
+                          const clang::Diagnostic &Info) override;
+
+    // 完成所有诊断后的最终输出
+    void Finish();
+
+    // 获取统计信息
+    void PrintStatistics();
+
+    // 清除所有诊断信息
+    void Clear();
+
+    // 获取所有诊断信息
+    const std::vector<DiagnosticInfo> &GetDiagnostics() const;
+
+private:
+    bool LogToFile;
+    std::string LogFilename;
+    std::shared_ptr<clang::DiagnosticOptions> DiagOpts;
+    std::vector<DiagnosticInfo> Diagnostics;
+    unsigned ErrorCount;
+    unsigned WarningCount;
+
+    // 获取源代码片段和错误标记
+    std::pair<std::string, std::string> GetSourceSnippetAndCaret(
+        const clang::FullSourceLoc &Loc,
+        const clang::Diagnostic &Info,
+        unsigned Context);
+
+    // 格式化诊断信息
+    std::string FormatDiagnostic(const DiagnosticInfo &Info) const;
+
+    // 输出诊断信息
+    // void OutputDiagnostic(const DiagnosticInfo &Info);
+
+    // 辅助函数：获取行内容
+    std::string GetLineContent(const clang::SourceManager &SM,
+                               clang::SourceLocation Loc) const;
+
+    // 获取诊断级别对应的颜色
+    const char *GetSeverityColor(clang::DiagnosticsEngine::Level Level) const;
+
+    // 根据是否输出到文件返回相应的颜色字符串
+    std::string Color(const char *ColorCode) const;
+
+    // 输出所有缓存的诊断信息
+    // void OutputAllDiagnostics() const;
+};
+
+#endif // DIAGNOSTIC_TOOL_H
+-------
 
 文件的相对路径：include/array_matcher.h
 文件内容：
@@ -817,6 +995,13 @@ bool MyFrontendAction::BeginSourceFileAction(clang::CompilerInstance &CI)
 {
     auto &options = CommandLineOptions::instance();
 
+    // 设置诊断选项
+    if (CI.hasDiagnostics()) {
+        auto &diagEngine = CI.getDiagnostics();
+        diagEngine.setShowColors(!options.getDiagnosticLogToFile());
+        // 注意：其他诊断选项已在DiagnosticConsumer中设置
+    }
+
     if (!options.getModifyMode()) {
         PreprocessorConfig::configure(CI);
         std::cout << "Preprocessor configuration completed.\n";
@@ -833,7 +1018,6 @@ MyASTConsumer::MyASTConsumer()
 
     if (options.getLocateMode()) {
         jsonManager.clearOutputJson();
-        std::cout << "Running in locate mode.\n";
 
         auto matcher = forStmt(
             hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
@@ -844,7 +1028,6 @@ MyASTConsumer::MyASTConsumer()
         matchFinder.addMatcher(matcher, new ArrayMatcher(jsonManager.getOutputJson()));
         std::cout << "Array matcher added successfully.\n";
     } else if (options.getRestoreMode()) {
-        std::cout << "Running in restore mode.\n";
         auto &inputJson = jsonManager.getInputJson();
 
         for (const auto &item: inputJson) {
@@ -903,7 +1086,6 @@ MyASTConsumer::MyASTConsumer()
             }
         }
     } else if (options.getModifyMode()) {
-        std::cout << "Running in modify mode.\n";
         auto matcher = arraySubscriptExpr(
             hasAncestor(forStmt().bind("forLoop"))
         ).bind("arrayAccess");
@@ -926,19 +1108,43 @@ void MyASTConsumer::HandleTranslationUnit(clang::ASTContext &Context)
     }
 }
 
-std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory()
-{
-    class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory
-    {
-    public:
-        std::unique_ptr<clang::FrontendAction> create() override
-        {
-            return std::make_unique<MyFrontendAction>();
+// 自定义 FrontendAction 类
+class CustomFrontendAction : public MyFrontendAction {
+public:
+    explicit CustomFrontendAction(std::shared_ptr<MyDiagnosticConsumer> consumer)
+        : DiagConsumer(std::move(consumer)) {}
+
+    bool BeginSourceFileAction(clang::CompilerInstance &CI) override {
+        if (CI.hasDiagnostics() && DiagConsumer) {
+            CI.getDiagnostics().setClient(DiagConsumer.get());
         }
-    };
-    return std::make_unique<CustomFrontendActionFactory>();
-}
--------
+        return MyFrontendAction::BeginSourceFileAction(CI);
+    }
+
+private:
+    std::shared_ptr<MyDiagnosticConsumer> DiagConsumer;
+};
+
+// 自定义 FrontendActionFactory 类
+class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory {
+public:
+    explicit CustomFrontendActionFactory(std::shared_ptr<MyDiagnosticConsumer> consumer)
+        : DiagConsumer(std::move(consumer)) {}
+
+    std::unique_ptr<clang::FrontendAction> create() override {
+        return std::make_unique<CustomFrontendAction>(DiagConsumer);
+    }
+
+private:
+    std::shared_ptr<MyDiagnosticConsumer> DiagConsumer;
+};
+
+// 工厂函数的实现
+std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory(
+    std::shared_ptr<MyDiagnosticConsumer> DiagConsumer)
+{
+    return std::make_unique<CustomFrontendActionFactory>(std::move(DiagConsumer));
+}-------
 
 文件的相对路径：src/array_matcher.cpp
 文件内容：
@@ -1791,8 +1997,8 @@ void JsonManager::validateInputJson() const
 
 文件的相对路径：src/command_line_options.cpp
 文件内容：
-// src/command_line_options.cpp
 #include "command_line_options.h"
+#include <filesystem>
 
 // Static member initialization
 llvm::cl::OptionCategory CommandLineOptions::ToolCategory("Array Analysis Tool Options");
@@ -1807,6 +2013,17 @@ llvm::cl::opt<bool> CommandLineOptions::RestoreMode("restore",
 
 llvm::cl::opt<bool> CommandLineOptions::ModifyMode("modify",
     llvm::cl::desc("Enable modify mode"),
+    llvm::cl::cat(ToolCategory));
+
+// 新增：诊断日志选项
+llvm::cl::opt<bool> CommandLineOptions::DiagnosticLogToFile("log-to-file",
+    llvm::cl::desc("Write diagnostic messages to file instead of terminal"),
+    llvm::cl::cat(ToolCategory));
+
+llvm::cl::opt<std::string> CommandLineOptions::DiagnosticLogFile("log-file",
+    llvm::cl::desc("Specify diagnostic log file path (default: test/tool_diagnostics.log)"),
+    llvm::cl::init("test/tool_diagnostics.log"),
+    llvm::cl::value_desc("filename"),
     llvm::cl::cat(ToolCategory));
 
 llvm::cl::opt<std::string> CommandLineOptions::InputFile("input",
@@ -1831,6 +2048,12 @@ void CommandLineOptions::initialize(int argc, const char** argv) {
         throw std::runtime_error("Failed to parse command line options");
     }
     OptionsParser = std::make_unique<clang::tooling::CommonOptionsParser>(std::move(ExpectedParser.get()));
+
+    // 如果指定了输出到文件，确保日志文件目录存在
+    if (DiagnosticLogToFile) {
+        std::filesystem::path logPath(DiagnosticLogFile.getValue());  // 修复：使用 getValue() 获取字符串值
+        std::filesystem::create_directories(logPath.parent_path());
+    }
 }
 
 bool CommandLineOptions::getLocateMode() const {
@@ -1843,6 +2066,14 @@ bool CommandLineOptions::getRestoreMode() const {
 
 bool CommandLineOptions::getModifyMode() const {
     return ModifyMode;
+}
+
+bool CommandLineOptions::getDiagnosticLogToFile() const {
+    return DiagnosticLogToFile;
+}
+
+std::string CommandLineOptions::getDiagnosticLogFile() const {
+    return DiagnosticLogFile;  // llvm::cl::opt<std::string> 会自动转换为 std::string
 }
 
 std::string CommandLineOptions::getInputFile() const {
@@ -1865,10 +2096,425 @@ const clang::tooling::CommonOptionsParser& CommandLineOptions::getOptionsParser(
         throw std::runtime_error("OptionsParser not initialized");
     }
     return *OptionsParser;
+}
+
+[[nodiscard]] std::string CommandLineOptions::toString() const {
+    std::string runMode;
+    if (getLocateMode()) runMode += "Locate Mode";
+    if (getRestoreMode()) runMode += (runMode.empty() ? "" : ", ") + std::string("Restore Mode");
+    if (getModifyMode()) runMode += (runMode.empty() ? "" : ", ") + std::string("Modify Mode");
+    if (runMode.empty()) runMode = "No Mode Selected";
+
+    return std::string("\nCommand Line Options:\n") +
+           std::string(20, '=') + "\n" +
+           "Run Mode: " + runMode + "\n" +
+           "InputFile: '" + getInputFile() + "'\n" +
+           "OutputFile: '" + getOutputFile() + "'\n" +
+           "Diagnostic Output: " + (getDiagnosticLogToFile() ?
+               "File ('" + getDiagnosticLogFile() + "')" : "Terminal") + "\n" +
+           std::string(20, '=') + "\n\n";
 }-------
+
+文件的相对路径：src/diagnostic_tool.cpp
+文件内容：
+#include "diagnostic_tool.h"
+
+#include <iomanip>
+#include <sstream>
+#include <clang/Basic/SourceManager.h>
+#include <clang/Basic/DiagnosticCategories.h>
+#include <llvm/ADT/SmallString.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Format.h>
+
+MyDiagnosticConsumer::MyDiagnosticConsumer(bool logToFile,
+                                           const std::string &logFilename)
+    : LogToFile(logToFile),
+      LogFilename(logFilename),
+      ErrorCount(0),
+      WarningCount(0)
+{
+    DiagOpts = std::make_shared<clang::DiagnosticOptions>();
+    DiagOpts->ShowColors = !LogToFile; // 只在终端输出时启用颜色
+    DiagOpts->ShowCarets = true;
+    DiagOpts->ShowFixits = true;
+    DiagOpts->TabStop = 4;
+    DiagOpts->MessageLength = 120;
+
+    if (LogToFile) {
+        std::error_code EC;
+        llvm::raw_fd_ostream OS(LogFilename, EC, llvm::sys::fs::OF_None);
+        if (EC) {
+            llvm::errs() << "Error opening log file: " << EC.message() << "\n";
+        } else {
+            auto now = std::chrono::system_clock::now();
+            auto in_time_t = std::chrono::system_clock::to_time_t(now);
+            std::stringstream ss;
+            ss << "=== Diagnostic Log ===\n"
+                    << "Time: " << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d, %H:%M:%S") << "\n"
+                    << "==================\n\n";
+
+            OS << ss.str();
+        }
+    }
+}
+
+const char *MyDiagnosticConsumer::GetSeverityColor(clang::DiagnosticsEngine::Level Level) const
+{
+    if (LogToFile) return ""; // 日志文件中不使用颜色
+
+    switch (Level) {
+        case clang::DiagnosticsEngine::Fatal:
+        case clang::DiagnosticsEngine::Error:
+            return Colors::RED;
+        case clang::DiagnosticsEngine::Warning:
+            return Colors::YELLOW;
+        case clang::DiagnosticsEngine::Note:
+            return Colors::CYAN;
+        case clang::DiagnosticsEngine::Remark:
+            return Colors::GREEN;
+        default:
+            return Colors::RESET;
+    }
+}
+
+std::string MyDiagnosticConsumer::Color(const char *ColorCode) const
+{
+    return LogToFile ? "" : ColorCode; // 日志文件中不使用颜色
+}
+
+void MyDiagnosticConsumer::HandleDiagnostic(clang::DiagnosticsEngine::Level DiagLevel,
+                                            const clang::Diagnostic &Info)
+{
+    DiagnosticInfo diagInfo;
+    diagInfo.Level = DiagLevel;
+
+    // 获取位置信息
+    if (Info.getLocation().isValid()) {
+        clang::FullSourceLoc FullLoc(Info.getLocation(), Info.getSourceManager());
+        diagInfo.Filename = FullLoc.getManager().getFilename(FullLoc).str();
+        diagInfo.Line = FullLoc.getSpellingLineNumber();
+        diagInfo.Column = FullLoc.getSpellingColumnNumber();
+
+        // 获取代码片段和错误位置标记
+        std::tie(diagInfo.CodeSnippet, diagInfo.CaretLine) =
+                GetSourceSnippetAndCaret(FullLoc, Info, 2);
+    }
+
+    // 获取错误信息
+    llvm::SmallVector<char, 100> MessageStr;
+    Info.FormatDiagnostic(MessageStr);
+    diagInfo.Message = std::string(MessageStr.begin(), MessageStr.end());
+
+    // 设置严重程度并更新计数器
+    switch (DiagLevel) {
+        case clang::DiagnosticsEngine::Fatal:
+            diagInfo.Severity = "Fatal Error";
+            ErrorCount++;
+            break;
+        case clang::DiagnosticsEngine::Error:
+            diagInfo.Severity = "Error";
+            ErrorCount++;
+            break;
+        case clang::DiagnosticsEngine::Warning:
+            diagInfo.Severity = "Warning";
+            WarningCount++;
+            break;
+        case clang::DiagnosticsEngine::Note:
+            diagInfo.Severity = "Note";
+            break;
+        case clang::DiagnosticsEngine::Remark:
+            diagInfo.Severity = "Remark";
+            break;
+        default:
+            diagInfo.Severity = "Other";
+    }
+
+    // 获取诊断类别
+    unsigned DiagID = Info.getID();
+    llvm::StringRef Category = clang::DiagnosticIDs::getCategoryNameFromID(DiagID);
+    if (!Category.empty()) {
+        diagInfo.Category = Category.str();
+    }
+
+    // 将诊断信息存入向量
+    Diagnostics.push_back(diagInfo);
+}
+
+void MyDiagnosticConsumer::Finish()
+{
+    // 先输出统计信息
+    PrintStatistics();
+
+    // 然后输出所有诊断信息
+    for (const auto &diagInfo: Diagnostics) {
+        std::string Output = FormatDiagnostic(diagInfo);
+
+        if (LogToFile) {
+            std::error_code EC;
+            llvm::raw_fd_ostream OS(LogFilename, EC,
+                                    llvm::sys::fs::OpenFlags::OF_Append);
+            if (!EC) {
+                OS << Output;
+            }
+        } else {
+            llvm::errs() << Output;
+        }
+    }
+
+    // 清空诊断信息
+    Clear();
+}
+
+std::string MyDiagnosticConsumer::GetLineContent(const clang::SourceManager &SM,
+                                                 clang::SourceLocation Loc) const
+{
+    if (!Loc.isValid())
+        return "";
+
+    unsigned FileOffset = SM.getFileOffset(Loc);
+    const char *BufferStart = SM.getCharacterData(Loc);
+    if (!BufferStart)
+        return "";
+
+    const char *LineStart = BufferStart;
+    llvm::Expected<llvm::StringRef> Content = SM.getBufferData(SM.getFileID(Loc));
+    if (!Content) {
+        return "";
+    }
+    llvm::StringRef BufferStr = *Content;
+    while (LineStart > BufferStr.begin() && LineStart[-1] != '\n')
+        --LineStart;
+
+    const char *LineEnd = BufferStart;
+    while (*LineEnd && *LineEnd != '\n')
+        ++LineEnd;
+
+    return std::string(LineStart, LineEnd);
+}
+
+std::pair<std::string, std::string> MyDiagnosticConsumer::GetSourceSnippetAndCaret(
+    const clang::FullSourceLoc &Loc,
+    const clang::Diagnostic &Info,
+    unsigned Context)
+{
+    if (!Loc.isValid())
+        return {"", ""};
+
+    const clang::SourceManager &SM = Loc.getManager();
+    unsigned LineNo = Loc.getSpellingLineNumber();
+    unsigned ColNo = Loc.getSpellingColumnNumber();
+    clang::FileID FID = SM.getFileID(Loc);
+
+    std::string Snippet;
+    std::string CaretLine;
+
+    if (FID.isValid()) {
+        for (unsigned i = (LineNo > Context ? LineNo - Context : 1);
+             i <= LineNo + Context; ++i) {
+            clang::SourceLocation StartOfLine = SM.translateLineCol(FID, i, 1);
+            if (StartOfLine.isValid()) {
+                bool IsErrorLine = (i == LineNo);
+                std::string LineContent = GetLineContent(SM, StartOfLine);
+
+                // 添加行号和内容
+                std::string LinePrefix = std::to_string(i) + " | ";
+                Snippet += LinePrefix + LineContent + "\n";
+
+                // 为错误行生成插入符号行
+                if (IsErrorLine) {
+                    std::string Spaces(LinePrefix.length() - 2, ' ');
+                    CaretLine = Spaces + "| " + std::string(ColNo - 1, ' ') + "^";
+
+                    clang::SourceLocation EndLoc = Info.getLocation();
+                    if (EndLoc.isValid()) {
+                        unsigned EndCol = SM.getSpellingColumnNumber(EndLoc);
+                        if (EndCol > ColNo) {
+                            CaretLine += std::string(EndCol - ColNo - 1, '~');
+                        }
+                    }
+                    CaretLine += "\n";
+                }
+            }
+        }
+    }
+    return {Snippet, CaretLine};
+}
+
+// void MyDiagnosticConsumer::OutputDiagnostic(const DiagnosticInfo &Info)
+// {
+//     std::string Output = FormatDiagnostic(Info);
+//
+//     if (LogToFile) {
+//         std::error_code EC;
+//         llvm::raw_fd_ostream OS(LogFilename, EC,
+//                                 llvm::sys::fs::OpenFlags::OF_Append);
+//         if (!EC) {
+//             OS << Output;
+//         }
+//     } else {
+//         llvm::errs() << Output;
+//     }
+// }
+
+std::string MyDiagnosticConsumer::FormatDiagnostic(const DiagnosticInfo &Info) const
+{
+    std::string Output;
+    llvm::raw_string_ostream OS(Output);
+
+    // 使用条件颜色输出
+    const std::string separator(80, '-');
+    OS << "\n" << (LogToFile ? separator : Color(Colors::DIM) + separator + Color(Colors::RESET)) << "\n";
+
+    // 严重程度
+    if (LogToFile) {
+        OS << Info.Severity;
+    } else {
+        OS << Color(GetSeverityColor(Info.Level)) << Color(Colors::BOLD)
+                << Info.Severity << Color(Colors::RESET);
+    }
+
+    // 类别
+    if (!Info.Category.empty()) {
+        if (LogToFile) {
+            OS << " [" << Info.Category << "]";
+        } else {
+            OS << Color(Colors::CYAN) << " [" << Info.Category << "]" << Color(Colors::RESET);
+        }
+    }
+    OS << "\n\n";
+
+    // 文件位置
+    if (!Info.Filename.empty()) {
+        if (LogToFile) {
+            OS << "In file: " << Info.Filename << ":" << Info.Line << ":" << Info.Column << "\n\n";
+        } else {
+            OS << Color(Colors::BLUE) << "In file: " << Info.Filename << ":"
+                    << Info.Line << ":" << Info.Column << Color(Colors::RESET) << "\n\n";
+        }
+    }
+
+    // 错误消息
+    if (LogToFile) {
+        OS << "Message: " << Info.Message << "\n\n";
+    } else {
+        OS << "Message: " << Color(GetSeverityColor(Info.Level))
+                << Info.Message << Color(Colors::RESET) << "\n\n";
+    }
+
+    // 代码片段
+    if (!Info.CodeSnippet.empty()) {
+        OS << (LogToFile ? "" : Color(Colors::BOLD))
+                << "Relevant Code:\n"
+                << (LogToFile ? "" : Color(Colors::RESET));
+
+        std::istringstream iss(Info.CodeSnippet);
+        std::string line;
+        while (std::getline(iss, line)) {
+            size_t separatorPos = line.find('|');
+            if (separatorPos != std::string::npos && !LogToFile) {
+                // 在终端输出时，行号使用暗色
+                OS << Color(Colors::DIM) << line.substr(0, separatorPos + 1)
+                        << Color(Colors::RESET) << line.substr(separatorPos + 1) << "\n";
+            } else {
+                OS << line << "\n";
+            }
+        }
+
+        if (!Info.CaretLine.empty()) {
+            if (LogToFile) {
+                OS << Info.CaretLine;
+            } else {
+                OS << Color(GetSeverityColor(Info.Level)) << Info.CaretLine
+                        << Color(Colors::RESET);
+            }
+        }
+        OS << "\n";
+    }
+
+    // 注释信息
+    if (!Info.Notes.empty()) {
+        OS << (LogToFile ? "" : Color(Colors::BOLD)) << "Additional Notes:\n"
+                << (LogToFile ? "" : Color(Colors::RESET));
+        for (const auto &Note: Info.Notes) {
+            if (LogToFile) {
+                OS << "  • " << Note << "\n";
+            } else {
+                OS << Color(Colors::CYAN) << "  • " << Note << Color(Colors::RESET) << "\n";
+            }
+        }
+        OS << "\n";
+    }
+
+    OS << (LogToFile ? separator : Color(Colors::DIM) + separator + Color(Colors::RESET)) << "\n";
+    return OS.str();
+}
+
+void MyDiagnosticConsumer::Clear()
+{
+    Diagnostics.clear();
+    ErrorCount = 0;
+    WarningCount = 0;
+}
+
+const std::vector<MyDiagnosticConsumer::DiagnosticInfo> &
+MyDiagnosticConsumer::GetDiagnostics() const
+{
+    return Diagnostics;
+}
+
+void MyDiagnosticConsumer::PrintStatistics()
+{
+    std::string stats;
+    if (LogToFile) {
+        stats = "\nDiagnostic Statistics:\n" +
+                std::string(20, '=') + "\n" +
+                "Total Errors  : " + std::to_string(ErrorCount) + "\n" +
+                "Total Warnings: " + std::to_string(WarningCount) + "\n" +
+                std::string(20, '=') + "\n";
+    } else {
+        stats = Color(Colors::CYAN) + "\nDiagnostic Statistics:\n" +
+                std::string(20, '=') + Color(Colors::RESET) + "\n" +
+                Color(Colors::RED) + "Total Errors  : " + std::to_string(ErrorCount) +
+                Color(Colors::RESET) + "\n" +
+                Color(Colors::YELLOW) + "Total Warnings: " + std::to_string(WarningCount) +
+                Color(Colors::RESET) + "\n" +
+                Color(Colors::CYAN) + std::string(20, '=') + Color(Colors::RESET) + "\n";
+    }
+
+    if (LogToFile) {
+        std::error_code EC;
+        llvm::raw_fd_ostream OS(LogFilename, EC,
+                                llvm::sys::fs::OpenFlags::OF_Append);
+        if (!EC) {
+            OS << stats;
+        }
+    }
+    llvm::errs() << stats;
+}
+
+// void MyDiagnosticConsumer::OutputAllDiagnostics() const
+// {
+//     for (const auto &diagInfo: Diagnostics) {
+//         std::string Output = FormatDiagnostic(diagInfo);
+//
+//         if (LogToFile) {
+//             std::error_code EC;
+//             llvm::raw_fd_ostream OS(LogFilename, EC,
+//                                     llvm::sys::fs::OpenFlags::OF_Append);
+//             if (!EC) {
+//                 OS << Output;
+//             }
+//         } else {
+//             llvm::errs() << Output;
+//         }
+//     }
+// }
+-------
 
 文件的相对路径：src/main.cpp
 文件内容：
+#include "diagnostic_tool.h"
 #include "code_modifier.h"
 #include "frontend_action.h"
 #include "command_line_options.h"
@@ -1876,6 +2522,7 @@ const clang::tooling::CommonOptionsParser& CommandLineOptions::getOptionsParser(
 #include "clang/Rewrite/Core/Rewriter.h"
 #include <iostream>
 #include <memory>
+#include <clang/Frontend/CompilerInstance.h>
 
 using namespace clang::tooling;
 
@@ -1883,33 +2530,42 @@ using namespace clang::tooling;
 clang::Rewriter TheRewriter;
 
 
-
 int main(int argc, const char **argv)
 {
     try {
-        // Initialize command line options
+        // 初始化命令行选项
         CommandLineOptions::instance().initialize(argc, argv);
         auto &options = CommandLineOptions::instance();
-
-        // Get non-const reference to CommonOptionsParser
+        llvm::outs() << options.toString();
+        // 获取对CommonOptionsParser的非常量引用
         auto &optionsParser = options.getOptionsParser();
 
-        // Create compilation database and source paths
+        // 创建编译数据库和源文件路径
         auto &compilations = optionsParser.getCompilations();
         auto sourcePaths = optionsParser.getSourcePathList();
 
-        // Create ClangTool
+        // 创建ClangTool
         ClangTool Tool(compilations, sourcePaths);
 
         auto &jsonManager = JsonManager::instance();
 
+        // 创建诊断消费者
+        auto DiagConsumer = std::make_shared<MyDiagnosticConsumer>(
+            CommandLineOptions::instance().getDiagnosticLogToFile(),
+            CommandLineOptions::instance().getDiagnosticLogFile()
+        );
+
+
+
+
         if (options.getLocateMode()) {
-            // Run the tool with custom frontend action
-            if (Tool.run(createCustomFrontendActionFactory().get()) != 0) {
+            // 使用自定义前端操作运行工具
+            if (Tool.run(createCustomFrontendActionFactory(DiagConsumer).get()) != 0) {
+                llvm::errs() << "Error: Some errors happened in the locate mode.\n";
                 return 1;
             }
 
-            // Write output if specified
+            // 如果指定，则写入输出
             if (!options.getOutputFile().empty()) {
                 jsonManager.writeOutputJson(options.getOutputFile());
             }
@@ -1919,15 +2575,13 @@ int main(int argc, const char **argv)
                 return 1;
             }
 
-            // Read input JSON
+            // 读取输入JSON
             jsonManager.readInputJson(options.getInputFile());
 
-            // Run the tool
-            if (Tool.run(createCustomFrontendActionFactory().get()) != 0) {
-                return 1;
-            }
+            // 运行工具
+            Tool.run(createCustomFrontendActionFactory(DiagConsumer).get());
 
-            // Write output if specified
+            // 如果指定，则写入输出
             if (!options.getOutputFile().empty()) {
                 jsonManager.writeOutputJson(options.getOutputFile());
             }
@@ -1937,15 +2591,16 @@ int main(int argc, const char **argv)
                 return 1;
             }
 
-            // Read input JSON
+            // 读取输入JSON
             jsonManager.readInputJson(options.getInputFile());
 
-            // Run the tool
-            if (Tool.run(createCustomFrontendActionFactory().get()) != 0) {
+            // 运行工具
+            if (Tool.run(createCustomFrontendActionFactory(DiagConsumer).get()) != 0) {
+                llvm::errs() << "Error: Some errors happened in the modify mode.\n";
                 return 1;
             }
 
-            // Write modified code
+            // 写入修改后的代码
             if (!options.getOutputFile().empty()) {
                 std::error_code EC;
                 llvm::raw_fd_ostream OS(options.getOutputFile(), EC);
@@ -1961,7 +2616,7 @@ int main(int argc, const char **argv)
                     return 1;
                 }
 
-                // Preserve headers and special attributes
+                // 保留头文件和特殊属性
                 OS << "#include <compiler/m3000.h>\n";
                 OS << "#include \"hthread_device.h\"\n\n";
                 OS << std::string(RewriteBuf->begin(), RewriteBuf->end());
@@ -1970,6 +2625,8 @@ int main(int argc, const char **argv)
             llvm::errs() << "Error: Please specify run mode (-locate, -restore, or -modify)\n";
             return 1;
         }
+        // 在所有处理完成后，输出诊断信息
+        DiagConsumer->Finish();
 
         return 0;
     } catch (const std::exception &e) {

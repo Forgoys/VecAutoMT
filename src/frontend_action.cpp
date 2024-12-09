@@ -15,6 +15,13 @@ bool MyFrontendAction::BeginSourceFileAction(clang::CompilerInstance &CI)
 {
     auto &options = CommandLineOptions::instance();
 
+    // 设置诊断选项
+    if (CI.hasDiagnostics()) {
+        auto &diagEngine = CI.getDiagnostics();
+        diagEngine.setShowColors(!options.getDiagnosticLogToFile());
+        // 注意：其他诊断选项已在DiagnosticConsumer中设置
+    }
+
     if (!options.getModifyMode()) {
         PreprocessorConfig::configure(CI);
         std::cout << "Preprocessor configuration completed.\n";
@@ -31,7 +38,6 @@ MyASTConsumer::MyASTConsumer()
 
     if (options.getLocateMode()) {
         jsonManager.clearOutputJson();
-        std::cout << "Running in locate mode.\n";
 
         auto matcher = forStmt(
             hasLoopInit(declStmt(hasSingleDecl(varDecl().bind("loopVar")))),
@@ -42,7 +48,6 @@ MyASTConsumer::MyASTConsumer()
         matchFinder.addMatcher(matcher, new ArrayMatcher(jsonManager.getOutputJson()));
         std::cout << "Array matcher added successfully.\n";
     } else if (options.getRestoreMode()) {
-        std::cout << "Running in restore mode.\n";
         auto &inputJson = jsonManager.getInputJson();
 
         for (const auto &item: inputJson) {
@@ -101,7 +106,6 @@ MyASTConsumer::MyASTConsumer()
             }
         }
     } else if (options.getModifyMode()) {
-        std::cout << "Running in modify mode.\n";
         auto matcher = arraySubscriptExpr(
             hasAncestor(forStmt().bind("forLoop"))
         ).bind("arrayAccess");
@@ -124,15 +128,47 @@ void MyASTConsumer::HandleTranslationUnit(clang::ASTContext &Context)
     }
 }
 
-std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory()
+// 自定义 FrontendAction 类
+class CustomFrontendAction : public MyFrontendAction
 {
-    class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory
+public:
+    explicit CustomFrontendAction(MyDiagnosticConsumer *consumer)
+        : DiagConsumer(consumer)
     {
-    public:
-        std::unique_ptr<clang::FrontendAction> create() override
-        {
-            return std::make_unique<MyFrontendAction>();
+    }
+
+    bool BeginSourceFileAction(clang::CompilerInstance &CI) override
+    {
+        if (CI.hasDiagnostics() && DiagConsumer) {
+            CI.getDiagnostics().setClient(DiagConsumer, false); // false表示不接管所有权
         }
-    };
-    return std::make_unique<CustomFrontendActionFactory>();
+        return MyFrontendAction::BeginSourceFileAction(CI);
+    }
+
+private:
+    MyDiagnosticConsumer *DiagConsumer; // 改用原始指针
+};
+
+class CustomFrontendActionFactory : public clang::tooling::FrontendActionFactory
+{
+public:
+    explicit CustomFrontendActionFactory(MyDiagnosticConsumer *consumer)
+        : DiagConsumer(consumer)
+    {
+    }
+
+    std::unique_ptr<clang::FrontendAction> create() override
+    {
+        return std::make_unique<CustomFrontendAction>(DiagConsumer);
+    }
+
+private:
+    MyDiagnosticConsumer *DiagConsumer; // 改用原始指针
+};
+
+// 工厂函数的实现
+std::unique_ptr<clang::tooling::FrontendActionFactory> createCustomFrontendActionFactory(
+    MyDiagnosticConsumer *DiagConsumer)
+{
+    return std::make_unique<CustomFrontendActionFactory>(DiagConsumer);
 }
